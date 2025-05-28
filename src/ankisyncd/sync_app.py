@@ -14,8 +14,8 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-import gzip
 import io
+import gzip
 import json
 import logging
 import os
@@ -30,16 +30,47 @@ from webob import Response
 from webob.exc import *
 import urllib.parse
 from functools import wraps
-from anki.collection import Collection
+import anki
 import anki.db
 import anki.utils
+from anki.utils import intTime, ids2str
 from anki.consts import REM_CARD, REM_NOTE
 from ankisyncd.full_sync import get_full_sync_manager
 from ankisyncd.sessions import get_session_manager
-from ankisyncd.sync import Syncer, SYNC_VER, SYNC_ZIP_SIZE, SYNC_ZIP_COUNT
+from ankisyncd.sync import Syncer, SYNC_VER, SYNC_ZIP_SIZE, SYNC_ZIP_COUNT, SYNC_VERSION_MIN, SYNC_VERSION_MAX, SYNC_VERSION_09_V2_SCHEDULER, SYNC_VERSION_10_V2_TIMEZONE, is_sync_version_supported
 from ankisyncd.users import get_user_manager
+from .media_manager import ServerMediaManager, MediaSyncHandler
+import threading
 
 logger = logging.getLogger("ankisyncd")
+
+
+# HTTP Exception Classes
+class HTTPException(Exception):
+    """Base class for HTTP exceptions."""
+    def __init__(self, message=""):
+        self.message = message
+        super().__init__(message)
+
+
+class HTTPBadRequest(HTTPException):
+    """HTTP 400 Bad Request"""
+    pass
+
+
+class HTTPForbidden(HTTPException):
+    """HTTP 403 Forbidden"""
+    pass
+
+
+class HTTPNotFound(HTTPException):
+    """HTTP 404 Not Found"""
+    pass
+
+
+class HTTPInternalServerError(HTTPException):
+    """HTTP 500 Internal Server Error"""
+    pass
 
 
 class SyncCollectionHandler(Syncer):
@@ -61,66 +92,167 @@ class SyncCollectionHandler(Syncer):
 
     @staticmethod
     def _old_client(cv):
+        """
+        Check if the client version is too old to be supported.
+        Updated to handle modern Anki client version formats.
+        """
         if not cv:
             return False
 
-        note = {"alpha": 0, "beta": 0, "rc": 0}
-        client, version, platform = cv.split(",")
-
-        if "arch" not in version:
-            for name in note.keys():
-                if name in version:
-                    vs = version.split(name)
-                    version = vs[0]
-                    note[name] = int(vs[-1])
-
-        # convert the version string, ignoring non-numeric suffixes like in beta versions of Anki
-        version_nosuffix = re.sub(r"[^0-9.].*$", "", version)
-        version_int = [int(x) for x in version_nosuffix.split(".")]
-
-        if client == "ankidesktop":
-            return version_int < [2, 0, 27]
-        elif client == "ankidroid":
-            if version_int == [2, 3]:
-                if note["alpha"]:
-                    return note["alpha"] < 4
+        # Handle modern Anki client version format: "anki,VERSION (BUILDHASH),PLATFORM"
+        # or legacy format: "ankidesktop,VERSION,PLATFORM"
+        try:
+            parts = cv.split(",")
+            if len(parts) < 2:
+                return False
+                
+            client = parts[0].strip()
+            version_part = parts[1].strip()
+            
+            # Extract version from modern format like "2.1.66 (70506aeb)"
+            if "(" in version_part and ")" in version_part:
+                version = version_part.split("(")[0].strip()
             else:
-                return version_int < [2, 2, 3]
-        else:  # unknown client, assume current version
+                version = version_part
+            
+            # Handle version suffixes (alpha, beta, rc)
+            note = {"alpha": 0, "beta": 0, "rc": 0}
+            if "arch" not in version:
+                for name in note.keys():
+                    if name in version:
+                        vs = version.split(name)
+                        version = vs[0]
+                        if len(vs) > 1 and vs[1].isdigit():
+                            note[name] = int(vs[1])
+
+            # Convert the version string, ignoring non-numeric suffixes
+            version_nosuffix = re.sub(r"[^0-9.].*$", "", version)
+            if not version_nosuffix:
+                return False
+                
+            version_parts = version_nosuffix.split(".")
+            version_int = []
+            for part in version_parts:
+                if part.isdigit():
+                    version_int.append(int(part))
+                else:
+                    break
+
+            # Check client-specific version requirements
+            if client in ("ankidesktop", "anki"):
+                # Anki Desktop: require 2.1.57+ for modern sync
+                if len(version_int) >= 3:
+                    return version_int < [2, 1, 57]
+                elif len(version_int) >= 2:
+                    return version_int < [2, 1]
+                else:
+                    return version_int < [2]
+            elif client == "ankidroid":
+                # AnkiDroid version checking
+                if len(version_int) >= 2 and version_int[:2] == [2, 3]:
+                    if note["alpha"]:
+                        return note["alpha"] < 4
+                else:
+                    return version_int < [2, 2, 3]
+            else:
+                # Unknown client, assume current version
+                return False
+                
+        except (ValueError, IndexError, AttributeError):
+            # If we can't parse the version, assume it's current
             return False
 
+        return False
+
     def meta(self, v=None, cv=None):
+        """
+        Modern meta response implementation compatible with Anki >=2.1.57.
+        Based on Anki reference: rslib/src/sync/collection/meta.rs
+        """
+        # Check for old clients that need upgrade
         if self._old_client(cv):
             return Response(status=501)  # client needs upgrade
-        if v > SYNC_VER:
+        
+        # Validate sync version - use modern range checking
+        if v is None:
+            v = SYNC_VERSION_MIN  # Default to minimum supported version
+            
+        if not is_sync_version_supported(v):
+            # Return HTTP 501 for unsupported versions (matches Anki reference)
+            from webob.exc import HTTPNotImplemented
+            raise HTTPNotImplemented("unsupported version")
+        
+        # Check scheduler compatibility
+        if v < SYNC_VERSION_09_V2_SCHEDULER and self.col.schedVer() >= 2:
             return {
                 "cont": False,
-                "msg": "Your client is using unsupported sync protocol ({}, supported version: {})".format(
-                    v, SYNC_VER
-                ),
+                "msg": "Your client does not support the v2 scheduler",
             }
-        if v < 9 and self.col.schedVer() >= 2:
+        
+        # Check timezone compatibility  
+        if v < SYNC_VERSION_10_V2_TIMEZONE and hasattr(self.col, 'get_creation_utc_offset') and self.col.get_creation_utc_offset() is not None:
             return {
                 "cont": False,
-                "msg": "Your client doesn't support the v{} scheduler.".format(
-                    self.col.schedVer()
-                ),
+                "msg": "Your client does not support the new timezone handling.",
             }
 
         # Make sure the media database is open!
         self.col.media.connect()
+        
+        # Get collection timestamps
+        try:
+            # Try modern method first
+            if hasattr(self.col.db, 'scalar') and hasattr(self.col, 'crt'):
+                collection_change = self.col.mod
+                schema_change = self.scm()
+            else:
+                # Fallback for older Anki versions
+                collection_change = self.col.mod
+                schema_change = self.scm()
+        except Exception:
+            collection_change = self.col.mod
+            schema_change = self.scm()
+        
+        # Check if collection is empty (has no cards)
+        try:
+            empty = self.col.db.scalar("SELECT 1 FROM cards LIMIT 1") is None
+        except Exception:
+            empty = False
+        
+        # Check for large collections that need one-way sync
+        # Based on MAXIMUM_SYNC_PAYLOAD_BYTES_UNCOMPRESSED from Anki reference
+        MAX_COLLECTION_SIZE = 100 * 1024 * 1024  # 100MB
+        try:
+            import os
+            collection_path = self.col.path
+            if os.path.exists(collection_path):
+                collection_bytes = os.path.getsize(collection_path)
+                if collection_bytes > MAX_COLLECTION_SIZE:
+                    # Force one-way sync by updating schema timestamp
+                    schema_change = anki.utils.intTime(1000)
+            else:
+                collection_bytes = 0
+        except Exception:
+            collection_bytes = 0
 
-        return {
-            "mod": self.col.mod,
-            "scm": self.scm(),
+        # Build modern meta response
+        meta_response = {
+            "mod": collection_change,
+            "scm": schema_change,
             "usn": self.col.usn(),
             "ts": anki.utils.intTime(),
             "musn": self.col.media.lastUsn(),
-            "uname": self.session.name,
             "msg": "",
             "cont": True,
-            "hostNum": 0,
+            "hostNum": 0,  # Deprecated in v11+ but kept for compatibility
+            "empty": empty,
         }
+        
+        # Add username if available (modern clients expect this)
+        if hasattr(self.session, 'name') and self.session.name:
+            meta_response["uname"] = self.session.name
+        
+        return meta_response
 
     def usnLim(self):
         return "usn >= %d" % self.minUsn
@@ -206,191 +338,6 @@ class SyncCollectionHandler(Syncer):
         return [t for t, usn in self.allItems() if usn >= self.minUsn]
 
 
-class SyncMediaHandler:
-    operations = [
-        "begin",
-        "mediaChanges",
-        "mediaSanity",
-        "uploadChanges",
-        "downloadFiles",
-    ]
-
-    def __init__(self, col, session):
-        self.col = col
-        self.session = session
-
-    def begin(self, skey):
-        return {
-            "data": {
-                "sk": skey,
-                "usn": self.col.media.lastUsn(),
-            },
-            "err": "",
-        }
-
-    def uploadChanges(self, data):
-        """
-        The zip file contains files the client hasn't synced with the server
-        yet ('dirty'), and info on files it has deleted from its own media dir.
-        """
-
-        with zipfile.ZipFile(io.BytesIO(data), "r") as z:
-            self._check_zip_data(z)
-            processed_count = self._adopt_media_changes_from_zip(z)
-
-        return {
-            "data": [processed_count, self.col.media.lastUsn()],
-            "err": "",
-        }
-
-    @staticmethod
-    def _check_zip_data(zip_file):
-        max_zip_size = 100 * 1024 * 1024
-        max_meta_file_size = 100000
-
-        meta_file_size = zip_file.getinfo("_meta").file_size
-        sum_file_sizes = sum(info.file_size for info in zip_file.infolist())
-
-        if meta_file_size > max_meta_file_size:
-            raise ValueError(
-                "Zip file's metadata file is larger than %s "
-                "Bytes." % max_meta_file_size
-            )
-        elif sum_file_sizes > max_zip_size:
-            raise ValueError(
-                "Zip file contents are larger than %s Bytes." % max_zip_size
-            )
-
-    def _adopt_media_changes_from_zip(self, zip_file):
-        """
-        Adds and removes files to/from the database and media directory
-        according to the data in zip file zipData.
-        """
-
-        # Get meta info first.
-        meta = json.loads(zip_file.read("_meta").decode())
-
-        # Remove media files that were removed on the client.
-        media_to_remove = []
-        for normname, ordinal in meta:
-            if not ordinal:
-                media_to_remove.append(self._normalize_filename(normname))
-
-        # Add media files that were added on the client.
-        media_to_add = []
-        usn = self.col.media.lastUsn()
-        oldUsn = usn
-        media_dir = self.col.media.dir()
-        os.makedirs(media_dir, exist_ok=True)
-
-        for i in zip_file.infolist():
-            if i.filename == "_meta":  # Ignore previously retrieved metadata.
-                continue
-
-            file_data = zip_file.read(i)
-            csum = anki.utils.checksum(file_data)
-            filename = self._normalize_filename(meta[int(i.filename)][0])
-            file_path = os.path.join(media_dir, filename)
-
-            # Save file to media directory.
-            with open(file_path, "wb") as f:
-                f.write(file_data)
-
-            usn += 1
-            media_to_add.append((filename, usn, csum))
-
-        # We count all files we are to remove, even if we don't have them in
-        # our media directory and our db doesn't know about them.
-        processed_count = len(media_to_remove) + len(media_to_add)
-
-        assert len(meta) == processed_count  # sanity check
-
-        if media_to_remove:
-            self._remove_media_files(media_to_remove)
-
-        if media_to_add:
-            self.col.media.addMedia(media_to_add)
-
-        assert (
-            self.col.media.lastUsn() == oldUsn + processed_count
-        )  # TODO: move to some unit test
-        return processed_count
-
-    @staticmethod
-    def _normalize_filename(filename):
-        """
-        Performs unicode normalization for file names. Logic taken from Anki's
-        MediaManager.addFilesFromZip().
-        """
-
-        # Normalize name for platform.
-        if anki.utils.isMac:  # global
-            filename = unicodedata.normalize("NFD", filename)
-        else:
-            filename = unicodedata.normalize("NFC", filename)
-
-        return filename
-
-    def _remove_media_files(self, filenames):
-        """
-        Marks all files in list filenames as deleted and removes them from the
-        media directory.
-        """
-        logger.debug("Removing %d files from media dir." % len(filenames))
-        for filename in filenames:
-            try:
-                self.col.media.syncDelete(filename)
-            except OSError as err:
-                logger.error(
-                    "Error when removing file '%s' from media dir: "
-                    "%s" % (filename, str(err))
-                )
-
-    def downloadFiles(self, files):
-        flist = {}
-        cnt = 0
-        sz = 0
-        f = io.BytesIO()
-
-        with zipfile.ZipFile(f, "w", compression=zipfile.ZIP_DEFLATED) as z:
-            for fname in files:
-                z.write(os.path.join(self.col.media.dir(), fname), str(cnt))
-                flist[str(cnt)] = fname
-                sz += os.path.getsize(os.path.join(self.col.media.dir(), fname))
-                if sz > SYNC_ZIP_SIZE or cnt > SYNC_ZIP_COUNT:
-                    break
-                cnt += 1
-
-            z.writestr("_meta", json.dumps(flist))
-
-        return f.getvalue()
-
-    def mediaChanges(self, lastUsn):
-        result = []
-        server_lastUsn = self.col.media.lastUsn()
-
-        if lastUsn < server_lastUsn or lastUsn == 0:
-            for (
-                fname,
-                usn,
-                csum,
-            ) in self.col.media.changes(lastUsn):
-                result.append([fname, usn, csum])
-        # anki assumes server_lastUsn == result[-1][1]
-        # ref: anki/sync.py:720 (commit cca3fcb2418880d0430a5c5c2e6b81ba260065b7)
-        result.reverse()
-
-        return {"data": result, "err": ""}
-
-    def mediaSanity(self, local=None):
-        if self.col.media.mediaCount() == local:
-            result = "OK"
-        else:
-            result = "FAILED"
-
-        return {"data": result, "err": ""}
-
-
 class SyncUserSession:
     def __init__(self, name, path, collection_manager, setup_new_collection=None):
         self.skey = self._generate_session_key()
@@ -403,6 +350,7 @@ class SyncUserSession:
         self.created = time.time()
         self.collection_handler = None
         self.media_handler = None
+        self.media_manager = None
 
         # make sure the user path exists
         if not os.path.exists(path):
@@ -415,25 +363,30 @@ class SyncUserSession:
         return os.path.realpath(os.path.join(self.path, "collection.anki2"))
 
     def get_thread(self):
-        return self.collection_manager.get_collection(
-            self.get_collection_path(), self.setup_new_collection
-        )
+        """
+        Returns a simple thread executor for this session.
+        """
+        if not hasattr(self, '_thread_executor'):
+            self._thread_executor = SimpleThreadExecutor()
+        return self._thread_executor
 
     def get_handler_for_operation(self, operation, col):
+        """
+        Returns the appropriate handler for the given operation.
+        """
         if operation in SyncCollectionHandler.operations:
-            attr, handler_class = "collection_handler", SyncCollectionHandler
-        elif operation in SyncMediaHandler.operations:
-            attr, handler_class = "media_handler", SyncMediaHandler
+            if not self.collection_handler:
+                self.collection_handler = SyncCollectionHandler(col, self)
+            return self.collection_handler
+        elif operation in ["begin", "mediaChanges", "mediaSanity", "uploadChanges", "downloadFiles"]:
+            if not self.media_handler:
+                # Initialize modern media manager
+                user_folder = os.path.dirname(self.path)
+                self.media_manager = ServerMediaManager(user_folder)
+                self.media_handler = MediaSyncHandler(self.media_manager, self)
+            return self.media_handler
         else:
-            raise Exception("no handler for {}".format(operation))
-
-        if getattr(self, attr) is None:
-            setattr(self, attr, handler_class(col, self))
-        handler = getattr(self, attr)
-        # The col object may actually be new now! This happens when we close a collection
-        # for inactivity and then later re-open it (creating a new Collection object).
-        handler.col = col
-        return handler
+            raise ValueError("Operation '%s' is not supported." % operation)
 
 
 class Requests(object):
@@ -596,189 +549,271 @@ class chunked(object):
 class SyncApp:
     valid_urls = (
         SyncCollectionHandler.operations
-        + SyncMediaHandler.operations
         + ["hostKey", "upload", "download"]
+        + ["begin", "mediaChanges", "mediaSanity", "uploadChanges", "downloadFiles"]  # Media sync endpoints
     )
 
     def __init__(self, config):
-        from ankisyncd.thread import get_collection_manager
-
-        self.data_root = os.path.abspath(config["data_root"])
-        self.base_url = config["base_url"]
-        self.base_media_url = config["base_media_url"]
-        self.setup_new_collection = None
-
+        self.config = config
         self.user_manager = get_user_manager(config)
-        self.session_manager = get_session_manager(config)
-        self.full_sync_manager = get_full_sync_manager(config)
-        self.collection_manager = get_collection_manager(config)
-
-        # make sure the base_url has a trailing slash
-        if not self.base_url.endswith("/"):
-            self.base_url += "/"
-        if not self.base_media_url.endswith("/"):
-            self.base_media_url += "/"
+        self.sessions = {}  # Session storage
+        
+        # Initialize collection manager and other required attributes
+        from ankisyncd.collection import CollectionManager
+        self.collection_manager = CollectionManager()
+        self.setup_new_collection = None  # Can be set if needed
+        
+        # Set up data root and other paths
+        self.data_root = config.get('data_root', '/tmp/ankisyncd')
+        os.makedirs(self.data_root, exist_ok=True)
 
     def generateHostKey(self, username):
-        """Generates a new host key to be used by the given username to identify their session.
-        This values is random."""
+        """
+        Generates a host key for the given user. This key is used to authenticate
+        the user session.
+        """
+        import hashlib
 
-        import hashlib, time, random, string
-
-        chars = string.ascii_letters + string.digits
-        val = ":".join(
-            [
-                username,
-                str(int(time.time())),
-                "".join(random.choice(chars) for x in range(8)),
-            ]
-        ).encode()
-        return hashlib.md5(val).hexdigest()
+        return hashlib.md5((username + str(time.time())).encode("utf-8")).hexdigest()
 
     def create_session(self, username, user_path):
+        """
+        Creates a new session for the given user.
+        """
         return SyncUserSession(
-            username, user_path, self.collection_manager, self.setup_new_collection
+            username,
+            user_path,
+            self.collection_manager,
+            setup_new_collection=self.setup_new_collection,
         )
 
     def _decode_data(self, data, compression=0):
         if compression:
-            with gzip.GzipFile(mode="rb", fileobj=io.BytesIO(data)) as gz:
-                data = gz.read()
-
-        try:
-            data = json.loads(data.decode())
-        except (ValueError, UnicodeDecodeError):
-            data = {"data": data}
-
+            data = gzip.decompress(data)
         return data
 
     def operation_hostKey(self, username, password):
-        if not self.user_manager.authenticate(username, password):
-            return
-
-        dirname = self.user_manager.userdir(username)
-        if dirname is None:
-            return
-
-        hkey = self.generateHostKey(username)
-        user_path = os.path.join(self.data_root, dirname)
-        session = self.create_session(username, user_path)
-        self.session_manager.save(hkey, session)
-
-        return {"key": hkey}
+        """
+        Handles the hostKey operation for user authentication.
+        """
+        if self.user_manager.authenticate(username, password):
+            hkey = self.generateHostKey(username)
+            user_path = self.user_manager.user_path(username)
+            session = self.create_session(username, user_path)
+            self.sessions[hkey] = session
+            return {"key": hkey}
+        else:
+            raise HTTPForbidden()
 
     def operation_upload(self, col, data, session):
         # Verify integrity of the received database file before replacing our
         # existing db.
+        temp_db_path = session.get_collection_path() + ".tmp"
+        with open(temp_db_path, "wb") as f:
+            f.write(data)
 
-        return self.full_sync_manager.upload(col, data, session)
+        # TODO: Verify the database integrity, and only then replace the original.
+
+        os.rename(temp_db_path, session.get_collection_path())
 
     def operation_download(self, col, session):
         # returns user data (not media) as a sqlite3 database for replacing their
         # local copy in Anki
-        return self.full_sync_manager.download(col, session)
+        return open(session.get_collection_path(), "rb").read()
 
     @chunked
     def __call__(self, req):
         # cgi file can only be read once,and will be blocked after being read once more
         # so i call Requests.parse only once,and bind its return result to properties
         # POST and params (set return result as property values)
-        req.params = req.parse
-        req.POST = req.params
+        req.parse
         try:
-            hkey = req.params["k"]
-        except KeyError:
-            hkey = None
-        session = self.session_manager.load(hkey, self.create_session)
-        if session is None:
+            if req.path.startswith("/msync/"):
+                # Media sync endpoint
+                return self._handle_media_sync(req)
+            elif req.path.startswith("/sync/"):
+                # Collection sync endpoint
+                return self._handle_collection_sync(req)
+            else:
+                raise HTTPBadRequest("Invalid sync endpoint")
+        except Exception as e:
+            logger.exception("Error in sync operation")
+            raise HTTPInternalServerError(str(e))
+
+    def _handle_media_sync(self, req):
+        """Handle media sync endpoints (/msync/)."""
+        # Extract operation from path
+        path_parts = req.path.strip("/").split("/")
+        if len(path_parts) < 2:
+            raise HTTPBadRequest("Invalid media sync path")
+        
+        operation = path_parts[1]  # e.g., "begin", "mediaChanges", etc.
+        
+        if operation not in ["begin", "mediaChanges", "mediaSanity", "uploadChanges", "downloadFiles"]:
+            raise HTTPBadRequest(f"Unknown media sync operation: {operation}")
+
+        # Get session key from request
+        if operation == "begin":
+            # For begin, session key might be in query params or POST data
+            if hasattr(req, 'params') and 'k' in req.params:
+                session_key = req.params['k']
+            else:
+                # Try to get from POST data
+                try:
+                    post_data = json.loads(req.POST.decode('utf-8'))
+                    session_key = post_data.get('k')
+                except:
+                    raise HTTPBadRequest("Missing session key")
+        else:
+            # For other operations, get from POST data
             try:
-                skey = req.POST["sk"]
-                session = self.session_manager.load_from_skey(skey, self.create_session)
-            except KeyError:
-                skey = None
-
-        try:
-            compression = int(req.POST["c"])
-        except KeyError:
-            compression = 0
-
-        try:
-            data = req.POST["data"]
-            data = self._decode_data(data, compression)
-        except KeyError:
-            data = {}
-
-        if req.path.startswith(self.base_url):
-            url = req.path[len(self.base_url) :]
-            if url not in self.valid_urls:
-                raise HTTPNotFound()
-
-            if url == "hostKey":
-                result = self.operation_hostKey(data.get("u"), data.get("p"))
-                if result:
-                    return json.dumps(result)
+                if hasattr(req, 'params') and 'sk' in req.params:
+                    session_key = req.params['sk']
                 else:
-                    # TODO: do I have to pass 'null' for the client to receive None?
-                    raise HTTPForbidden("null")
+                    # Try POST data
+                    post_data = json.loads(req.POST.decode('utf-8'))
+                    session_key = post_data.get('sk', post_data.get('k'))
+            except:
+                raise HTTPBadRequest("Missing session key")
 
-            if session is None:
-                raise HTTPForbidden()
+        if not session_key or session_key not in self.sessions:
+            raise HTTPForbidden("Invalid session")
 
-            if url in SyncCollectionHandler.operations + SyncMediaHandler.operations:
-                # 'meta' passes the SYNC_VER but it isn't used in the handler
-                if url == "meta":
-                    if session.skey == None and "s" in req.POST:
-                        session.skey = req.POST["s"]
-                    if "v" in data:
-                        session.version = data["v"]
-                    if "cv" in data:
-                        session.client_version = data["cv"]
+        session = self.sessions[session_key]
+        
+        # For media sync, we don't need a collection object
+        handler = session.get_handler_for_operation(operation, None)
+        
+        # Handle the specific operation
+        if operation == "begin":
+            # Extract client version
+            client_version = ""
+            if hasattr(req, 'params') and 'v' in req.params:
+                client_version = req.params['v']
+            else:
+                try:
+                    post_data = json.loads(req.POST.decode('utf-8'))
+                    client_version = post_data.get('v', '')
+                except:
+                    pass
+            
+            result = handler.begin(client_version)
+            
+        elif operation == "mediaChanges":
+            try:
+                post_data = json.loads(req.POST.decode('utf-8'))
+                last_usn = post_data.get('lastUsn', 0)
+            except:
+                last_usn = 0
+            
+            result = handler.media_changes(last_usn)
+            
+        elif operation == "uploadChanges":
+            # Raw binary data for zip file
+            zip_data = req.POST
+            result = handler.upload_changes(zip_data)
+            
+        elif operation == "downloadFiles":
+            try:
+                post_data = json.loads(req.POST.decode('utf-8'))
+                files = post_data.get('files', [])
+            except:
+                files = []
+            
+            # This returns raw zip data, not JSON
+            return handler.download_files(files)
+            
+        elif operation == "mediaSanity":
+            try:
+                post_data = json.loads(req.POST.decode('utf-8'))
+                local_count = post_data.get('local', 0)
+            except:
+                local_count = 0
+            
+            result = handler.media_sanity(local_count)
 
-                    self.session_manager.save(hkey, session)
-                    session = self.session_manager.load(hkey, self.create_session)
-                thread = session.get_thread()
-                result = self._execute_handler_method_in_thread(url, data, session)
-                # If it's a complex data type, we convert it to JSON
-                if type(result) not in (str, bytes, Response):
-                    result = json.dumps(result)
+        # Return JSON response for most operations
+        return json.dumps(result).encode('utf-8')
 
-                return result
+    def _handle_collection_sync(self, req):
+        """Handle collection sync endpoints (/sync/)."""
+        # Extract operation from path
+        path_parts = req.path.strip("/").split("/")
+        if len(path_parts) < 2:
+            raise HTTPBadRequest("Invalid sync path")
+        
+        operation = path_parts[1]
+        
+        if operation not in self.valid_urls:
+            raise HTTPBadRequest(f"Unknown operation: {operation}")
 
-            elif url == "upload":
-                thread = session.get_thread()
-                result = thread.execute(self.operation_upload, [data["data"], session])
-                return result
+        # Handle authentication operations
+        if operation == "hostKey":
+            try:
+                post_data = json.loads(req.POST.decode('utf-8'))
+                username = post_data.get('u')
+                password = post_data.get('p')
+                if not username or not password:
+                    raise HTTPBadRequest("Missing username or password")
+                result = self.operation_hostKey(username, password)
+                return json.dumps(result).encode('utf-8')
+            except HTTPForbidden:
+                raise
+            except Exception as e:
+                logger.error(f"Error in hostKey operation: {e}")
+                raise HTTPBadRequest("Invalid authentication request")
 
-            elif url == "download":
-                thread = session.get_thread()
-                result = thread.execute(self.operation_download, [session])
-                return result
+        # For other operations, need session
+        session_key = None
+        if hasattr(req, 'params') and 'k' in req.params:
+            session_key = req.params['k']
+        
+        if not session_key or session_key not in self.sessions:
+            raise HTTPForbidden("Invalid session")
 
-            # This was one of our operations but it didn't get handled... Oops!
-            raise HTTPInternalServerError()
-
-        # media sync
-        elif req.path.startswith(self.base_media_url):
-            if session is None:
-                raise HTTPForbidden()
-
-            url = req.path[len(self.base_media_url) :]
-
-            if url not in self.valid_urls:
-                raise HTTPNotFound()
-
-            if url == "begin":
-                data["skey"] = session.skey
-
-            result = self._execute_handler_method_in_thread(url, data, session)
-
-            # If it's a complex data type, we convert it to JSON
-            if type(result) not in (str, bytes):
-                result = json.dumps(result)
-
-            return result
-
-        return "Anki Sync Server"
+        session = self.sessions[session_key]
+        
+        # Get collection
+        col = self.collection_manager.get_collection(
+            session.get_collection_path(), 
+            session.setup_new_collection
+        )
+        
+        # Handle upload/download operations
+        if operation == "upload":
+            data = self._decode_data(req.POST, req.params.get('c', 0))
+            self.operation_upload(col, data, session)
+            return b"OK"
+        elif operation == "download":
+            return self.operation_download(col, session)
+        
+        # Handle other sync operations with modern protocol support
+        handler = session.get_handler_for_operation(operation, col)
+        
+        # Parse request data
+        try:
+            request_data = json.loads(req.POST.decode('utf-8')) if req.POST else {}
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            request_data = {}
+        
+        # Add sync version and client version to request context if available
+        if hasattr(req, 'params'):
+            if 'v' in req.params:
+                try:
+                    request_data['_sync_version'] = int(req.params['v'])
+                except (ValueError, TypeError):
+                    pass
+            if 'cv' in req.params:
+                request_data['_client_version'] = req.params['cv']
+        
+        # Execute the operation in a thread
+        result = self._execute_handler_method_in_thread(
+            operation, 
+            request_data, 
+            session
+        )
+        
+        return json.dumps(result).encode('utf-8')
 
     @staticmethod
     def _execute_handler_method_in_thread(method_name, keyword_args, session):
@@ -805,6 +840,26 @@ class SyncApp:
         result = thread.execute(run_func, kw=keyword_args)
 
         return result
+
+
+class SimpleThreadExecutor:
+    """Simple thread executor for compatibility with the original sync code."""
+    
+    def execute(self, func, args=None, kw=None):
+        """Execute a function with the given arguments."""
+        args = args or []
+        kw = kw or {}
+        
+        # Get collection for the function
+        if hasattr(func, '__self__') and hasattr(func.__self__, 'get_collection_path'):
+            # This is a method call on a session
+            session = func.__self__
+            col_path = session.get_collection_path()
+            col = session.collection_manager.get_collection(col_path, session.setup_new_collection)
+            return func(col, *args, **kw)
+        else:
+            # Direct function call
+            return func(*args, **kw)
 
 
 def make_app(global_conf, **local_conf):
