@@ -131,6 +131,110 @@ The sync server now has robust compatibility with modern Anki clients (>=2.1.57)
   - [ ] Plan staged rollout
   - [ ] Set up backup procedures
 
+  ### proposed testing:
+
+To effectively test the server, I propose a multi-faceted approach combining manual testing with an Anki client and expanding our automated test suite. This aligns with the "Phase 5: Testing" section in your `TODO.md`.
+
+Here's a breakdown:
+
+**I. Manual Testing (Using Anki Desktop Client)**
+
+This will help us verify real-world client-server interaction and catch issues that automated tests might miss.
+
+**Setup:**
+1.  **Run the Server:** Start your Anki sync server locally.
+2.  **Anki Desktop Client:** Ensure you have a recent version of Anki Desktop installed.
+3.  **Test Profiles:** Create a couple of new, clean Anki profiles for testing. This prevents interference with your main Anki data.
+4.  **Test Data:** Prepare some sample data:
+    *   A small collection with a few decks, note types, notes, and cards.
+    *   Some notes with media files (images, short audio clips).
+    *   Optionally, a larger collection if you have one, to test performance later.
+
+**Test Cases:**
+
+**A. Functional Tests:**
+    1.  **Full Sync (Upload):**
+        *   In a new Anki profile, add your small collection data.
+        *   Configure Anki to sync with your local server (e.g., `http://localhost:27701/`).
+        *   Perform a sync. Observe client and server logs for errors.
+        *   **Verification:** Check server-side user data folder. The collection file should exist.
+    2.  **Full Sync (Download):**
+        *   In a *different* new Anki profile, configure sync with your local server.
+        *   Perform a sync.
+        *   **Verification:** The data from step 1 should appear in this profile. Check for integrity (all notes, decks, card counts, etc.).
+    3.  **Two-Way Incremental Sync:**
+        *   **Client 1 -> Server -> Client 2:**
+            *   Using Profile 1 (which has data), add a new note and modify an existing one. Sync.
+            *   Using Profile 2, sync. Verify the new note and modifications appear.
+        *   **Client 2 -> Server -> Client 1:**
+            *   Using Profile 2, delete a note and add a new deck. Sync.
+            *   Using Profile 1, sync. Verify the deletion and new deck appear.
+    4.  **Conflict Scenario (Simple):**
+        *   Profile 1: Modify a specific field in a note. Sync.
+        *   Profile 2: Sync to get the latest state. Then, modify the *same field* in the *same note* to a *different* value. Sync.
+        *   **Verification:** Observe Anki client behavior. It should typically detect a conflict and might prompt for a full sync or offer choices. Check server logs for any conflict-related messages.
+    5.  **Large Collection Test (Basic):**
+        *   If you have a larger test collection, attempt a full upload and then a full download to a new profile.
+        *   **Verification:** Check if the sync completes without timeouts or major errors. (Detailed performance testing is for Phase 6).
+
+**B. Media Tests:**
+    1.  **Basic Media Sync (Upload & Download):**
+        *   In Profile 1, add a few notes with image and audio files. Sync.
+        *   **Verification (Server):** Check the user's media folder on the server. The files should be present (possibly with hashed names if that's how Anki or your server stores them, but the media DB should map them).
+        *   In Profile 2, sync.
+        *   **Verification (Client):** Media files should appear in Profile 2 notes and be viewable/playable.
+    2.  **Media Deletion Propagation:**
+        *   In Profile 1, delete a media file from a note (e.g., remove an image from a field). Sync.
+        *   In Profile 2, sync.
+        *   **Verification:** The media file should be removed from the note in Profile 2. Check if the file is also removed from the server's media store (or marked for deletion in the media DB).
+    3.  **File Overwrite/Update (Conceptual):**
+        *   Modify a media file (e.g., edit an image slightly but keep the filename the same in the note). Sync from Profile 1.
+        *   Sync to Profile 2.
+        *   **Verification:** The updated media file should appear in Profile 2.
+    4.  **Large Media Batch (Basic):**
+        *   Add several notes with multiple media files (respecting Anki's individual file and batch size limits). Sync.
+        *   **Verification:** Check for successful completion without errors.
+
+**II. Automated Testing**
+
+This will build a safety net and allow for easier regression testing. We've already started with `test_phase4_simple.py` and `tests/test_protocol_compatibility.py`.
+
+**Focus Areas:**
+    1.  **Unit Tests (Expand Existing):**
+        *   **`SchemaUpdater`:** More tests for edge cases in schema detection, data migration logic (if any part is testable in isolation), and field mapping for all supported schema versions.
+        *   **`ServerMediaDatabase`:** Test all CRUD operations, USN tracking, metadata updates (`total_bytes`, `total_nonempty_files`), and schema upgrade logic.
+        *   **`ServerMediaManager`:**
+            *   Filename normalization for different platforms/unicode cases.
+            *   Zip creation (`zip_files_for_download`) with various file counts and sizes, including metadata.
+            *   Zip extraction (`_unzip_and_validate_files`) with valid and malformed zips/metadata.
+            *   File storage and deletion logic.
+        *   **`SyncCollectionHandler` & `MediaSyncHandler`:** More granular tests for methods not fully covered by the protocol tests, such as:
+            *   `applyChanges`, `applyChunk`, `start`, `finish`.
+            *   `media_changes`, `upload_changes`, `download_files`, `media_sanity` with various inputs.
+        *   **`CollectionManager`:** Test collection acquisition, caching, and creation logic.
+    2.  **Integration Tests (Endpoint Level):**
+        *   Create tests that instantiate `SyncApp`.
+        *   Use a testing client (like `unittest.mock` or a simple HTTP client) to send requests to the sync endpoints (e.g., `/sync/meta`, `/msync/begin`).
+        *   **Setup:** For these tests, you'll likely need to:
+            *   Create temporary user directories and minimal `collection.anki2` and `media.db` files.
+            *   Mock `anki.Collection` or parts of it if direct instantiation is too heavy or has unwanted side effects for a specific test.
+        *   **Verification:** Assert the JSON responses from the server and check for expected side effects (e.g., changes in the temporary database files, files created in the media folder).
+        *   **Scenarios:**
+            *   Full authentication flow (`hostKey` -> `meta`).
+            *   Basic incremental sync sequence (`meta` -> `start` -> `chunk` -> `applyChunk` -> `finish`).
+            *   Basic media sync sequence (`begin` -> `mediaChanges` -> `downloadFiles` / `uploadChanges`).
+    3.  **Client Simulation Tests (Advanced - Future Goal):**
+        *   This would involve more complex scripts that simulate a series of Anki client actions and verify end-to-end behavior. This is a significant undertaking and can be a later goal.
+
+**Immediate Steps for Automated Testing:**
+1.  Start by expanding unit tests for the `media_manager.py` and `schema_updater.py` components as they are critical and have complex logic.
+2.  Then, begin creating basic integration tests for the main sync and media sync endpoints.
+
+This combined approach should give us good coverage and confidence in the server's stability and compatibility.
+
+What are your thoughts on this testing plan? We can adjust it based on your priorities.
+
+
 ## Notes
 - Priority: Media sync implementation is critical for latest Anki compatibility
 - Testing should be continuous throughout development

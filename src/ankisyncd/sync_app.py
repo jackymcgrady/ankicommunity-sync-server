@@ -26,6 +26,7 @@ import time
 import unicodedata
 import zipfile
 import types
+import zstandard as zstd
 from webob import Response
 from webob.exc import *
 import urllib.parse
@@ -33,7 +34,7 @@ from functools import wraps
 import anki
 import anki.db
 import anki.utils
-from anki.utils import intTime, ids2str
+from anki.utils import int_time, ids2str
 from anki.consts import REM_CARD, REM_NOTE
 from ankisyncd.full_sync import get_full_sync_manager
 from ankisyncd.sessions import get_session_manager
@@ -55,6 +56,11 @@ class HTTPException(Exception):
 
 class HTTPBadRequest(HTTPException):
     """HTTP 400 Bad Request"""
+    pass
+
+
+class HTTPUnauthorized(HTTPException):
+    """HTTP 401 Unauthorized"""
     pass
 
 
@@ -196,8 +202,26 @@ class SyncCollectionHandler(Syncer):
                 "msg": "Your client does not support the new timezone handling.",
             }
 
-        # Make sure the media database is open!
-        self.col.media.connect()
+        # Handle media connection properly based on collection type
+        media_usn = 0
+        try:
+            if hasattr(self.col, 'media'):
+                # Direct collection object - use media directly
+                self.col.media.connect()
+                media_usn = self.col.media.lastUsn()
+            elif hasattr(self.col, 'execute'):
+                # Collection wrapper - use execute method to access media
+                def get_media_usn(col):
+                    col.media.connect()
+                    return col.media.lastUsn()
+                media_usn = self.col.execute(get_media_usn, waitForReturn=True)
+            else:
+                # Fallback - assume media USN is 0
+                logger.warning("Cannot access media from collection, using USN 0")
+                media_usn = 0
+        except Exception as e:
+            logger.warning(f"Failed to get media USN: {e}, using 0")
+            media_usn = 0
         
         # Get collection timestamps
         try:
@@ -229,7 +253,7 @@ class SyncCollectionHandler(Syncer):
                 collection_bytes = os.path.getsize(collection_path)
                 if collection_bytes > MAX_COLLECTION_SIZE:
                     # Force one-way sync by updating schema timestamp
-                    schema_change = anki.utils.intTime(1000)
+                    schema_change = anki.utils.int_time(1000)
             else:
                 collection_bytes = 0
         except Exception:
@@ -240,8 +264,8 @@ class SyncCollectionHandler(Syncer):
             "mod": collection_change,
             "scm": schema_change,
             "usn": self.col.usn(),
-            "ts": anki.utils.intTime(),
-            "musn": self.col.media.lastUsn(),
+            "ts": anki.utils.int_time(),
+            "media_usn": media_usn,
             "msg": "",
             "cont": True,
             "hostNum": 0,  # Deprecated in v11+ but kept for compatibility
@@ -301,7 +325,7 @@ class SyncCollectionHandler(Syncer):
         return dict(status="ok")
 
     def finish(self):
-        return super().finish(anki.utils.intTime(1000))
+        return super().finish(anki.utils.int_time(1000))
 
     # This function had to be put here in its entirety because Syncer.removed()
     # doesn't use self.usnLim() (which we override in this class) in queries.
@@ -389,135 +413,150 @@ class SyncUserSession:
             raise ValueError("Operation '%s' is not supported." % operation)
 
 
-class Requests(object):
-    def __init__(self, environ: dict):
+# Modern sync request class
+class SyncRequest:
+    """Modern request parser for Anki sync protocol."""
+    
+    def __init__(self, environ):
         self.environ = environ
-
-    @property
-    def params(self):
-        return self.request_items_dict
-
-    @params.setter
-    def params(self, value):
-        """
-        A dictionary-like object containing both the parameters from
-        the query string and request body.
-        """
-        self.request_items_dict = value
-
-    @property
-    def path(self) -> str:
-        return self.environ["PATH_INFO"]
-
-    @property
-    def POST(self):
-        return self._request_items_dict
-
-    @POST.setter
-    def POST(self, value):
-        self._request_items_dict = value
-
-    @property
-    def parse(self):
-        """Return a MultiDict containing all the variables from a form
-        request.\n
-        include not only post req,but also get"""
-        env = self.environ
-        query_string = env["QUERY_STRING"]
-        content_len = env.get("CONTENT_LENGTH", "0")
-        input = env.get("wsgi.input")
-        length = 0 if content_len == "" else int(content_len)
-        body = b""
-        request_items_dict = {}
-        if length == 0:
-            if input is None:
-                return request_items_dict
-            if env.get("HTTP_TRANSFER_ENCODING", "0") == "chunked":
-                # readlines and read(no argument) will block
-                # convert byte str to number base 16
-                leng = int(input.readline(), 16)
-                c = 0
-                bdry = b""
-                data = []
-                data_other = []
-                while leng > 0:
-                    c += 1
-                    dt = input.read(leng + 2)
-                    if c == 1:
-                        bdry = dt
-                    elif c >= 3:
-                        # data
-                        data_other.append(dt)
-                    leng = int(input.readline(), 16)
-                data_other = [item for item in data_other if item != b"\r\n\r\n"]
-                for item in data_other:
-                    if bdry in item:
-                        break
-                    # only strip \r\n if there are extra \n
-                    # eg b'?V\xc1\x8f>\xf9\xb1\n\r\n'
-                    data.append(item[:-2])
-                request_items_dict["data"] = b"".join(data)
-                others = data_other[len(data) :]
-                boundary = others[0]
-                others = b"".join(others).split(boundary.strip())
-                others.pop()
-                others.pop(0)
-                for i in others:
-                    i = i.splitlines()
-                    key = re.findall(b'name="(.*?)"', i[2], flags=re.M)[0].decode(
-                        "utf-8"
-                    )
-                    v = i[-1].decode("utf-8")
-                    request_items_dict[key] = v
-                return request_items_dict
-
-            if query_string != "":
-                # GET method
-                body = query_string
-                request_items_dict = urllib.parse.parse_qs(body)
-                for k, v in request_items_dict.items():
-                    request_items_dict[k] = "".join(v)
-                return request_items_dict
-
+        self.path = environ["PATH_INFO"]
+        self.method = environ["REQUEST_METHOD"]
+        self._data = None
+        self._sync_header = None
+        
+    def get_sync_header(self):
+        """Parse the anki-sync header."""
+        if self._sync_header is None:
+            header_value = self.environ.get("HTTP_ANKI_SYNC", "")
+            if header_value:
+                try:
+                    self._sync_header = json.loads(header_value)
+                except json.JSONDecodeError:
+                    self._sync_header = {}
+            else:
+                self._sync_header = {}
+        return self._sync_header
+    
+    def get_body_data(self):
+        """Get and decompress the request body."""
+        if self._data is not None:
+            return self._data
+            
+        content_length_str = self.environ.get("CONTENT_LENGTH")
+        logger.info(f"Raw CONTENT_LENGTH header: '{content_length_str}'")
+        if not content_length_str:  # Handles None or empty string
+            content_length = 0
         else:
-            body = env["wsgi.input"].read(length)
+            try:
+                content_length = int(content_length_str)
+            except ValueError:
+                logger.warning(f"Malformed CONTENT_LENGTH header: '{content_length_str}'. Assuming 0.")
+                content_length = 0
 
-        if body is None or body == b"":
-            return request_items_dict
-            # process body to dict
-        repeat = body.splitlines()[0]
-        items = re.split(repeat, body)
-        # del first ,last item
-        items.pop()
-        items.pop(0)
-        for item in items:
-            if b'name="data"' in item:
-                data_field = None
-                # remove \r\n
-                if b"application/octet-stream" in item:
-                    # Ankidroid case
-                    item = re.sub(
-                        b'Content-Disposition: form-data; name="data"; filename="data"',
-                        b"",
-                        item,
-                    )
-                    item = re.sub(b"Content-Type: application/octet-stream", b"", item)
-                    data_field = item.strip()
+        logger.info(f"Parsed content_length: {content_length}")
+        if content_length == 0:
+            logger.info("CONTENT_LENGTH is 0, returning empty JSON and skipping body processing")
+            self._data = b"{}"
+            return self._data
+            
+        raw_data = self.environ["wsgi.input"].read(content_length)
+        
+        # Try multiple decompression methods
+        try:
+            # Try zstd decompression first (modern Anki)
+            dctx = zstd.ZstdDecompressor()
+            self._data = dctx.decompress(raw_data)
+            logger.info(f"Successfully zstd-decompressed payload. Length: {len(self._data)}")
+        except zstd.ZstdError as e:
+            logger.warning(f"Zstd decompression failed: {e}")
+            # Try streaming decompression for cases where content size isn't in header
+            try:
+                dctx = zstd.ZstdDecompressor()
+                with dctx.stream_reader(io.BytesIO(raw_data)) as reader:
+                    self._data = reader.read()
+                logger.info(f"Successfully zstd stream-decompressed payload. Length: {len(self._data)}")
+            except Exception as e2:
+                logger.warning(f"Zstd stream decompression also failed: {e2}. Falling back to legacy parsing.")
+                if raw_data.startswith(b'{'):
+                    logger.info("Treating as plain JSON since it starts with '{'")
+                    self._data = raw_data
                 else:
-                    # PKzip file stream and others
-                    item = re.sub(
-                        b'Content-Disposition: form-data; name="data"; filename="data"',
-                        b"",
-                        item,
-                    )
-                    data_field = item.strip()
-                request_items_dict["data"] = data_field
-                continue
-            item = re.sub(b"\r\n", b"", item, flags=re.MULTILINE)
-            key = re.findall(b'name="(.*?)"', item)[0].decode("utf-8")
-            v = item[item.rfind(b'"') + 1 :].decode("utf-8")
-            request_items_dict[key] = v
-        return request_items_dict
+                    logger.info("Attempting legacy form data parsing")
+                    self._data = self._parse_legacy_form_data(raw_data)
+        
+        return self._data
+    
+    def _parse_legacy_form_data(self, raw_data):
+        """Parse legacy multipart form data format."""
+        try:
+            data_str = raw_data.decode('utf-8', errors='ignore')
+            # Simplified regex, focusing on the name="u" and name="p" parts and the value after newlines
+            u_match = re.search(r'name="u".*?\r?\n\r?\n(.*?)\r?\n', data_str, re.IGNORECASE | re.DOTALL)
+            p_match = re.search(r'name="p".*?\r?\n\r?\n(.*?)\r?\n', data_str, re.IGNORECASE | re.DOTALL)
+            
+            if u_match and p_match:
+                result = {
+                    "u": u_match.group(1).strip(),
+                    "p": p_match.group(1).strip()
+                }
+                logger.info(f"Legacy form data parsed: u='{result['u']}', p='****'")
+                return json.dumps(result).encode('utf-8')
+        except Exception as e:
+            logger.error(f"Legacy form data parsing exception: {e}")
+        
+        logger.warning("Fallback: _parse_legacy_form_data returning empty JSON.")
+        return b"{}"
+    
+    def get_json_data(self):
+        """Get parsed JSON data from the request body."""
+        data_bytes = self.get_body_data()
+        if not data_bytes:
+            return {}
+        try:
+            # Attempt to decode as UTF-8. If this fails, log and return empty.
+            decoded_str = data_bytes.decode('utf-8')
+        except UnicodeDecodeError as e:
+            logger.error(f"UTF-8 decoding failed for JSON parsing: {e}. Data (first 100 bytes): {data_bytes[:100]}")
+            return {}
+
+        try:
+            # Attempt to parse JSON. If this fails, log and return empty.
+            parsed_json = json.loads(decoded_str)
+            logger.info("Successfully parsed JSON from request body.")
+            return parsed_json
+        except json.JSONDecodeError as e:
+            logger.error(f"JSON parsing failed: {e}. Decoded string (first 100 chars): {decoded_str[:100]}")
+            return {}
+    
+    def get_sync_key(self):
+        """Get the sync key from header or data."""
+        header = self.get_sync_header()
+        if header.get('k'):
+            return header['k']
+            
+        # Fallback to JSON data
+        data = self.get_json_data()
+        return data.get('k', '')
+    
+    def get_session_key(self):
+        """Get the session key from header or data."""
+        header = self.get_sync_header()
+        if header.get('s'):
+            return header['s']
+            
+        # Fallback to JSON data  
+        data = self.get_json_data()
+        return data.get('sk', '')
+    
+    def get_sync_version(self):
+        """Get the sync version from header."""
+        header = self.get_sync_header()
+        return header.get('v', SYNC_VERSION_MIN)
+    
+    def get_client_version(self):
+        """Get the client version from header."""
+        header = self.get_sync_header()
+        return header.get('c', '')
 
 
 class chunked(object):
@@ -530,14 +569,34 @@ class chunked(object):
         clss = args[0]
         environ = args[1]
         start_response = args[2]
-        b = Requests(environ)
+        b = SyncRequest(environ)
         args = (
             clss,
             b,
         )
-        w = self.__wrapped__(*args, **kwargs)
-        resp = Response(w)
-        return resp(environ, start_response)
+        try:
+            w = self.__wrapped__(*args, **kwargs)
+            resp = Response(w)
+            return resp(environ, start_response)
+        except HTTPBadRequest as e:
+            resp = Response(str(e), status=400)
+            return resp(environ, start_response)
+        except HTTPUnauthorized as e:
+            resp = Response(str(e), status=401)
+            return resp(environ, start_response)
+        except HTTPForbidden as e:
+            resp = Response(str(e), status=403)
+            return resp(environ, start_response)
+        except HTTPNotFound as e:
+            resp = Response(str(e), status=404)
+            return resp(environ, start_response)
+        except HTTPInternalServerError as e:
+            resp = Response(str(e), status=500)
+            return resp(environ, start_response)
+        except Exception as e:
+            logger.exception("Unhandled exception in sync operation")
+            resp = Response(str(e), status=500)
+            return resp(environ, start_response)
 
     def __get__(self, instance, cls):
         if instance is None:
@@ -560,7 +619,7 @@ class SyncApp:
         
         # Initialize collection manager and other required attributes
         from ankisyncd.collection import CollectionManager
-        self.collection_manager = CollectionManager()
+        self.collection_manager = CollectionManager(config)
         self.setup_new_collection = None  # Can be set if needed
         
         # Set up data root and other paths
@@ -598,7 +657,8 @@ class SyncApp:
         """
         if self.user_manager.authenticate(username, password):
             hkey = self.generateHostKey(username)
-            user_path = self.user_manager.user_path(username)
+            user_dir = self.user_manager.userdir(username)
+            user_path = os.path.join(self.user_manager.collection_path, user_dir)
             session = self.create_session(username, user_path)
             self.sessions[hkey] = session
             return {"key": hkey}
@@ -613,8 +673,21 @@ class SyncApp:
             f.write(data)
 
         # TODO: Verify the database integrity, and only then replace the original.
-
+        
+        # Close the current collection before replacing the file
+        if hasattr(col, 'close'):
+            col.close()
+        
+        # Replace the collection file
         os.rename(temp_db_path, session.get_collection_path())
+        
+        # Force the collection manager to reload the collection from the new file
+        # by closing the cached collection wrapper
+        if hasattr(session, 'collection_manager'):
+            col_path = session.get_collection_path()
+            if col_path in session.collection_manager.collections:
+                session.collection_manager.collections[col_path].close()
+                del session.collection_manager.collections[col_path]
 
     def operation_download(self, col, session):
         # returns user data (not media) as a sqlite3 database for replacing their
@@ -624,21 +697,16 @@ class SyncApp:
     @chunked
     def __call__(self, req):
         # cgi file can only be read once,and will be blocked after being read once more
-        # so i call Requests.parse only once,and bind its return result to properties
+        # so i call SyncRequest.parse only once,and bind its return result to properties
         # POST and params (set return result as property values)
-        req.parse
-        try:
-            if req.path.startswith("/msync/"):
-                # Media sync endpoint
-                return self._handle_media_sync(req)
-            elif req.path.startswith("/sync/"):
-                # Collection sync endpoint
-                return self._handle_collection_sync(req)
-            else:
-                raise HTTPBadRequest("Invalid sync endpoint")
-        except Exception as e:
-            logger.exception("Error in sync operation")
-            raise HTTPInternalServerError(str(e))
+        if req.path.startswith("/msync/"):
+            # Media sync endpoint
+            return self._handle_media_sync(req)
+        elif req.path.startswith("/sync/"):
+            # Collection sync endpoint
+            return self._handle_collection_sync(req)
+        else:
+            raise HTTPBadRequest("Invalid sync endpoint")
 
     def _handle_media_sync(self, req):
         """Handle media sync endpoints (/msync/)."""
@@ -737,36 +805,68 @@ class SyncApp:
 
     def _handle_collection_sync(self, req):
         """Handle collection sync endpoints (/sync/)."""
-        # Extract operation from path
+        # Debug: log complete request information
+        logger.info(f"=== INCOMING REQUEST ===")
+        logger.info(f"Path: {req.path}")
+        logger.info(f"Method: {req.method}")
+        logger.info(f"User-Agent: {req.environ.get('HTTP_USER_AGENT', 'None')}")
+        logger.info(f"Content-Type: {req.environ.get('CONTENT_TYPE', 'None')}")
+        logger.info(f"Content-Length: {req.environ.get('CONTENT_LENGTH', 'None')}")
+        logger.info(f"Anki-Sync Header: {req.environ.get('HTTP_ANKI_SYNC', 'None')}")
+        
+        # Extract operation from path, handling both /sync/ and /sync/sync/ prefixes
         path_parts = req.path.strip("/").split("/")
         if len(path_parts) < 2:
             raise HTTPBadRequest("Invalid sync path")
         
-        operation = path_parts[1]
+        # Handle both /sync/hostKey and /sync/sync/hostKey paths
+        operation = path_parts[-1] if path_parts[-1] in self.valid_urls else path_parts[-2]
         
         if operation not in self.valid_urls:
             raise HTTPBadRequest(f"Unknown operation: {operation}")
 
+        logger.info(f"Operation: {operation}")
+
         # Handle authentication operations
         if operation == "hostKey":
-            try:
-                post_data = json.loads(req.POST.decode('utf-8'))
-                username = post_data.get('u')
-                password = post_data.get('p')
-                if not username or not password:
-                    raise HTTPBadRequest("Missing username or password")
-                result = self.operation_hostKey(username, password)
-                return json.dumps(result).encode('utf-8')
-            except HTTPForbidden:
-                raise
-            except Exception as e:
-                logger.error(f"Error in hostKey operation: {e}")
-                raise HTTPBadRequest("Invalid authentication request")
+            # Get username and password from JSON data
+            data = req.get_json_data()
+            sync_header = req.get_sync_header()
+            
+            logger.info(f"Request body data: {data}")
+            logger.info(f"Sync header: {sync_header}")
+            
+            # Handle both modern (email/username) and legacy (u/p) field names
+            username = (data.get('username') or 
+                       data.get('u') or 
+                       data.get('email'))  # Modern client might send email field
+            password = data.get('password') or data.get('p')
+            
+            logger.info(f"Extracted credentials - identifier: '{username}', password present: {bool(password)}")
+            
+            # Check if this is an empty discovery request from modern client
+            if not username and not password and not data:
+                logger.info("Empty hostKey request detected - modern client discovery request")
+                # Modern clients expect an HTTP 401 response for initial discovery
+                # This prompts them to retry with credentials
+                raise HTTPUnauthorized("Authentication required")
+            
+            if not username or not password:
+                logger.warning(f"Incomplete credentials - identifier: '{username}', password present: {bool(password)}")
+                raise HTTPForbidden("Missing username or password")
+            
+            logger.info(f"Attempting authentication for user: '{username}'")
+            result = self.operation_hostKey(username, password)
+            logger.info(f"Authentication successful for user: '{username}', returning host key")
+            
+            # Return zstd-compressed JSON response
+            response_data = json.dumps(result).encode('utf-8')
+            ctx = zstd.ZstdCompressor()
+            compressed_data = ctx.compress(response_data)
+            return compressed_data
 
-        # For other operations, need session
-        session_key = None
-        if hasattr(req, 'params') and 'k' in req.params:
-            session_key = req.params['k']
+        # For other operations, need session key
+        session_key = req.get_sync_key() or req.get_session_key()
         
         if not session_key or session_key not in self.sessions:
             raise HTTPForbidden("Invalid session")
@@ -779,32 +879,111 @@ class SyncApp:
             session.setup_new_collection
         )
         
-        # Handle upload/download operations
+        # Handle upload/download operations (these might use different data format)
         if operation == "upload":
-            data = self._decode_data(req.POST, req.params.get('c', 0))
+            # For upload, get raw binary data directly from request body
+            content_length_str = req.environ.get("CONTENT_LENGTH")
+            if not content_length_str:
+                content_length = 0
+            else:
+                try:
+                    content_length = int(content_length_str)
+                except ValueError:
+                    content_length = 0
+
+            if content_length > 0:
+                # Read raw binary data directly from wsgi input
+                raw_data = req.environ["wsgi.input"].read(content_length)
+                logger.info(f"Upload received {len(raw_data)} bytes of raw data")
+                logger.info(f"Upload raw data preview: {raw_data[:50]}...")
+                
+                # Try to decompress the raw data
+                try:
+                    # Try zstd decompression first (modern Anki)
+                    dctx = zstd.ZstdDecompressor()
+                    decompressed_data = dctx.decompress(raw_data)
+                    logger.info(f"Successfully zstd-decompressed upload data: {len(decompressed_data)} bytes")
+                    data = decompressed_data
+                except zstd.ZstdError as e:
+                    logger.warning(f"Zstd decompression failed: {e}")
+                    # If zstd fails, try gzip (legacy format)
+                    try:
+                        data = gzip.decompress(raw_data)
+                        logger.info(f"Successfully gzip-decompressed upload data: {len(data)} bytes")
+                    except Exception as e2:
+                        logger.warning(f"Gzip decompression also failed: {e2}")
+                        # Try different zstd approaches
+                        try:
+                            # Try with explicit max window size
+                            dctx = zstd.ZstdDecompressor(max_window_size=2**31)
+                            decompressed_data = dctx.decompress(raw_data)
+                            logger.info(f"Successfully zstd-decompressed with max window: {len(decompressed_data)} bytes")
+                            data = decompressed_data
+                        except Exception as e3:
+                            logger.warning(f"Zstd with max window failed: {e3}")
+                            # Try streaming decompression
+                            try:
+                                dctx = zstd.ZstdDecompressor()
+                                with dctx.stream_reader(io.BytesIO(raw_data)) as reader:
+                                    decompressed_data = reader.read()
+                                logger.info(f"Successfully zstd stream-decompressed: {len(decompressed_data)} bytes") 
+                                data = decompressed_data
+                            except Exception as e4:
+                                logger.error(f"All decompression methods failed. Raw data: {raw_data[:100]}")
+                                logger.error(f"zstd error: {e}, gzip error: {e2}, zstd max window: {e3}, zstd stream: {e4}")
+                                # If all else fails, assume it's already uncompressed
+                                logger.warning("Using raw data as-is (may be corrupted)")
+                                data = raw_data
+            else:
+                logger.warning("Upload request has no content")
+                data = b""
+            
+            # Verify it looks like a SQLite database
+            if data.startswith(b'SQLite format 3'):
+                logger.info("Upload data confirmed as SQLite database")
+            else:
+                logger.warning(f"Upload data doesn't appear to be SQLite: {data[:20]}")
+            
             self.operation_upload(col, data, session)
-            return b"OK"
+            
+            # Return zstd-compressed response for modern clients
+            response_data = b"OK"
+            ctx = zstd.ZstdCompressor()
+            compressed_response = ctx.compress(response_data)
+            return compressed_response
+            
         elif operation == "download":
-            return self.operation_download(col, session)
+            result = self.operation_download(col, session)
+            # Compress the response
+            ctx = zstd.ZstdCompressor()
+            return ctx.compress(result)
         
         # Handle other sync operations with modern protocol support
         handler = session.get_handler_for_operation(operation, col)
         
-        # Parse request data
-        try:
-            request_data = json.loads(req.POST.decode('utf-8')) if req.POST else {}
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            request_data = {}
+        # Parse request data from JSON
+        request_data = req.get_json_data()
         
-        # Add sync version and client version to request context if available
-        if hasattr(req, 'params'):
-            if 'v' in req.params:
-                try:
-                    request_data['_sync_version'] = int(req.params['v'])
-                except (ValueError, TypeError):
-                    pass
-            if 'cv' in req.params:
-                request_data['_client_version'] = req.params['cv']
+        # Map sync protocol parameters to handler method parameters
+        sync_version = req.get_sync_version()
+        client_version = req.get_client_version()
+        
+        # For meta operation, map to expected parameter names
+        if operation == "meta":
+            request_data['v'] = sync_version
+            request_data['cv'] = client_version
+            # Remove any internal parameters that shouldn't be passed to handler
+            request_data.pop('_sync_version', None)
+            request_data.pop('_client_version', None)
+        else:
+            # For other operations, don't add internal parameters that handlers don't expect
+            # The handlers already have access to sync version and client version if needed
+            pass
+        
+        # Filter out internal parameters that modern clients send but handlers don't expect
+        internal_params = ['_pad', '_sync_version', '_client_version']
+        for param in internal_params:
+            request_data.pop(param, None)
         
         # Execute the operation in a thread
         result = self._execute_handler_method_in_thread(
@@ -813,7 +992,10 @@ class SyncApp:
             session
         )
         
-        return json.dumps(result).encode('utf-8')
+        # Return zstd-compressed JSON response
+        response_data = json.dumps(result).encode('utf-8')
+        ctx = zstd.ZstdCompressor()
+        return ctx.compress(response_data)
 
     @staticmethod
     def _execute_handler_method_in_thread(method_name, keyword_args, session):
@@ -823,21 +1005,35 @@ class SyncApp:
         self.col.
         """
 
-        def run_func(col, **keyword_args):
-            # Retrieve the correct handler method.
+        # Get collection wrapper first
+        col_wrapper = session.collection_manager.get_collection(
+            session.get_collection_path(), 
+            session.setup_new_collection
+        )
+
+        def run_func_with_wrapper(col):
+            """Function that runs inside the wrapper's execute method with actual collection."""
+            # Get handler with the actual collection object
             handler = session.get_handler_for_operation(method_name, col)
-            handler_method = getattr(handler, method_name)
+            
+            # Update the handler's collection reference to use the actual collection
+            # instead of the wrapper it was originally initialized with
+            original_col = handler.col
+            handler.col = col
+            
+            try:
+                handler_method = getattr(handler, method_name)
+                res = handler_method(**keyword_args)
+                col.save()
+                return res
+            finally:
+                # Restore the original collection reference
+                handler.col = original_col
 
-            res = handler_method(**keyword_args)
+        run_func_with_wrapper.__name__ = method_name  # More useful debugging messages.
 
-            col.save()
-            return res
-
-        run_func.__name__ = method_name  # More useful debugging messages.
-
-        # Send the closure to the thread for execution.
-        thread = session.get_thread()
-        result = thread.execute(run_func, kw=keyword_args)
+        # Use the wrapper's execute method to run with the actual collection
+        result = col_wrapper.execute(run_func_with_wrapper, waitForReturn=True)
 
         return result
 
@@ -850,16 +1046,8 @@ class SimpleThreadExecutor:
         args = args or []
         kw = kw or {}
         
-        # Get collection for the function
-        if hasattr(func, '__self__') and hasattr(func.__self__, 'get_collection_path'):
-            # This is a method call on a session
-            session = func.__self__
-            col_path = session.get_collection_path()
-            col = session.collection_manager.get_collection(col_path, session.setup_new_collection)
-            return func(col, *args, **kw)
-        else:
-            # Direct function call
-            return func(*args, **kw)
+        # Execute the function directly with provided arguments
+        return func(*args, **kw)
 
 
 def make_app(global_conf, **local_conf):

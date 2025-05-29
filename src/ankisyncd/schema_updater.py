@@ -33,8 +33,13 @@ class SchemaUpdater:
     def _detect_schema_version(self):
         """Detect the current schema version and set up field mappings."""
         try:
-            # Get schema version from collection
-            self.schema_version = self.col.scm
+            # Get schema version from collection - scm is a method, not an attribute
+            if hasattr(self.col, 'scm'):
+                self.schema_version = self.col.scm()  # Call as method
+            else:
+                # Fallback for collections without scm method
+                self.schema_version = self.col.db.scalar("select scm from col") or 0
+            
             self.anki_version = getattr(self.col, 'ver', 'unknown')
             
             # Detect actual schema version by checking table structures
@@ -47,8 +52,12 @@ class SchemaUpdater:
             
         except Exception as e:
             logger.warning(f"Could not detect schema version: {e}")
-            # Fall back to legacy mappings
+            # Fall back to legacy mappings and set default schema version
+            self._schema_version = 11  # Default to V11 (legacy schema)
+            self.schema_version = 11
+            self.anki_version = 'unknown'
             self._setup_legacy_mappings()
+            logger.info(f"Using fallback schema version {self._schema_version}")
     
     def _detect_actual_schema_version(self) -> int:
         """Detect actual schema version by checking table structures."""
@@ -303,6 +312,11 @@ class SchemaUpdater:
     
     def needs_data_migration(self) -> bool:
         """Check if data migration is needed between JSON and table storage."""
+        # Handle case where schema version detection failed
+        if self._schema_version is None:
+            logger.warning("Schema version is None in needs_data_migration, defaulting to False")
+            return False
+            
         # Migration needed if we have V15+ schema but old JSON data
         if self._schema_version >= 15:
             # Check if we still have JSON data in col table
@@ -316,6 +330,11 @@ class SchemaUpdater:
     
     def get_sync_version_for_schema(self) -> int:
         """Get the appropriate sync version for the current schema."""
+        # Handle case where schema version detection failed
+        if self._schema_version is None:
+            logger.warning("Schema version is None, defaulting to sync version 10")
+            return 10  # Default to V10 for compatibility
+        
         # Based on Anki's version.rs mapping
         if self._schema_version >= 18:
             return 11  # SYNC_VERSION_11_DIRECT_POST

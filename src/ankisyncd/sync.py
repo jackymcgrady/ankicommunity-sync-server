@@ -15,10 +15,10 @@ import time
 from typing import List, Tuple
 
 from anki.db import DB, DBError
-from anki.utils import ids2str, intTime, platDesc, checksum, devMode
+from anki.utils import ids2str, int_time, plat_desc, checksum, dev_mode
 from anki.consts import *
 from anki.config import ConfigManager
-from anki.utils import versionWithBuild
+from anki.utils import version_with_build
 import anki
 from anki.lang import ngettext
 
@@ -115,11 +115,21 @@ class Syncer(object):
 
     #########################################################################
     def meta(self):
+        if self.col.schedVer() == 2 and self.sync_version < 9:
+            return dict(
+                scm=self.scm(),
+                ts=int_time(),
+                mod=self.col.mod,
+                usn=self.col._usn,
+                musn=0,
+                msg="upgrade required",
+                cont=False,
+            )
         return dict(
+            scm=self.scm(),
+            ts=int_time(),
             mod=self.col.mod,
-            scm=self.col.scm,
             usn=self.col._usn,
-            ts=intTime(),
             musn=0,
             msg="",
             cont=True,
@@ -225,7 +235,7 @@ select id from notes where mid = ?) limit 1"""
             return [list([0, 0, 0]), 0, 0, 0, 0, 0, 0, 0]
 
     def usnLim(self):
-        return "usn = -1"
+        return "usn >= -1"
 
     def finish(self, now=None):
         if now is not None:
@@ -538,7 +548,7 @@ class HttpSyncer(object):
         self.prefix = "sync/"
 
     def syncURL(self):
-        if devMode:
+        if dev_mode:
             url = "https://l1sync.ankiweb.net/"
         else:
             url = SYNC_BASE % (self.hostNum or "")
@@ -653,7 +663,7 @@ class RemoteServer(HttpSyncer):
                 json.dumps(
                     dict(
                         v=SYNC_VER,
-                        cv="ankidesktop,%s,%s" % (versionWithBuild(), platDesc()),
+                        cv="ankidesktop,%s,%s" % (version_with_build(), plat_desc()),
                     )
                 ).encode("utf8")
             ),
@@ -703,7 +713,7 @@ class FullSyncer(HttpSyncer):
         super().__init__(self, hkey, client, hostNum=hostNum)
         self.postVars = dict(
             k=self.hkey,
-            v="ankidesktop,%s,%s" % (anki.version, platDesc()),
+            v="ankidesktop,%s,%s" % (anki.version, plat_desc()),
         )
         self.col = col
 
@@ -755,7 +765,7 @@ class RemoteMediaServer(HttpSyncer):
 
     def begin(self):
         self.postVars = dict(
-            k=self.hkey, v="ankidesktop,%s,%s" % (anki.version, platDesc())
+            k=self.hkey, v="ankidesktop,%s,%s" % (anki.version, plat_desc())
         )
         ret = self._dataOnly(
             self.req("begin", io.BytesIO(json.dumps(dict()).encode("utf8")))
@@ -1519,3 +1529,18 @@ class RemoteMediaServer(HttpSyncer):
         except Exception as e:
             logger.error(f"Error determining sync abort: {e}")
             return True, f"Error in sync analysis: {e}"
+
+    def maxUsn(self):
+        return self.col._usn
+
+    def mediaChanges(self, lastUsn):
+        result = []
+        usn = lastUsn + 1
+        fname = None
+        while fname is not None or lastUsn == 0:
+            fname = self.col.media.syncMedia(lastUsn)
+            if fname is not None:
+                result.append(fname)
+                lastUsn = usn
+                usn += 1
+        return {"files": result, "lastUsn": lastUsn}
