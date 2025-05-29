@@ -94,6 +94,12 @@ The sync server now has robust compatibility with modern Anki clients (>=2.1.57)
   - [x] Verify AnkiDroid compatibility (Client version parsing handles AnkiDroid)
   - [x] Handle backward compatibility (Graceful handling of older sync versions)
 
+- [x] Session Management
+  - [x] Fix session persistence across server restarts
+  - [x] Replace in-memory sessions with SqliteSessionManager
+  - [x] Enable persistent sessions via ANKISYNCD_SESSION_DB_PATH environment variable
+  - [x] Test session persistence functionality
+
 ## Phase 5: Testing
 - [ ] Functional Tests
   - [ ] One-way sync tests
