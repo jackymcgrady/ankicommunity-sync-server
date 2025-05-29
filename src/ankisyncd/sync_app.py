@@ -615,7 +615,7 @@ class SyncApp:
     def __init__(self, config):
         self.config = config
         self.user_manager = get_user_manager(config)
-        self.sessions = {}  # Session storage
+        self.session_manager = get_session_manager(config)  # Use persistent session manager
         
         # Initialize collection manager and other required attributes
         from ankisyncd.collection import CollectionManager
@@ -625,6 +625,15 @@ class SyncApp:
         # Set up data root and other paths
         self.data_root = config.get('data_root', '/tmp/ankisyncd')
         os.makedirs(self.data_root, exist_ok=True)
+
+    def session_factory(self, username, path):
+        """Factory function to create sessions as expected by session manager."""
+        return SyncUserSession(
+            username,
+            path,
+            self.collection_manager,
+            setup_new_collection=self.setup_new_collection,
+        )
 
     def generateHostKey(self, username):
         """
@@ -660,7 +669,7 @@ class SyncApp:
             user_dir = self.user_manager.userdir(username)
             user_path = os.path.join(self.user_manager.collection_path, user_dir)
             session = self.create_session(username, user_path)
-            self.sessions[hkey] = session
+            self.session_manager.save(hkey, session)
             return {"key": hkey}
         else:
             raise HTTPForbidden()
@@ -744,10 +753,9 @@ class SyncApp:
             except:
                 raise HTTPBadRequest("Missing session key")
 
-        if not session_key or session_key not in self.sessions:
+        session = self.session_manager.load(session_key, self.session_factory)
+        if not session:
             raise HTTPForbidden("Invalid session")
-
-        session = self.sessions[session_key]
         
         # For media sync, we don't need a collection object
         handler = session.get_handler_for_operation(operation, None)
@@ -868,10 +876,9 @@ class SyncApp:
         # For other operations, need session key
         session_key = req.get_sync_key() or req.get_session_key()
         
-        if not session_key or session_key not in self.sessions:
+        session = self.session_manager.load(session_key, self.session_factory)
+        if not session:
             raise HTTPForbidden("Invalid session")
-
-        session = self.sessions[session_key]
         
         # Get collection
         col = self.collection_manager.get_collection(
