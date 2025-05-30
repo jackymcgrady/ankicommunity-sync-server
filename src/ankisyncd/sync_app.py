@@ -729,29 +729,31 @@ class SyncApp:
         if operation not in ["begin", "mediaChanges", "mediaSanity", "uploadChanges", "downloadFiles"]:
             raise HTTPBadRequest(f"Unknown media sync operation: {operation}")
 
-        # Get session key from request
-        if operation == "begin":
-            # For begin, session key might be in query params or POST data
+        # Get host key from request - media sync uses host key (k) for all operations
+        # Based on Anki reference: media sync always uses the host key, not session key
+        session_key = None
+        
+        # First try to get from anki-sync header (modern clients)
+        sync_header = req.get_sync_header()
+        if sync_header and 'k' in sync_header:
+            session_key = sync_header['k']
+        
+        # Fallback to query params or POST data for legacy clients
+        if not session_key:
             if hasattr(req, 'params') and 'k' in req.params:
                 session_key = req.params['k']
+            elif hasattr(req, 'params') and 'sk' in req.params:
+                session_key = req.params['sk']
             else:
                 # Try to get from POST data
                 try:
-                    post_data = json.loads(req.POST.decode('utf-8'))
-                    session_key = post_data.get('k')
+                    post_data = req.get_json_data()
+                    session_key = post_data.get('k') or post_data.get('sk')
                 except:
-                    raise HTTPBadRequest("Missing session key")
-        else:
-            # For other operations, get from POST data
-            try:
-                if hasattr(req, 'params') and 'sk' in req.params:
-                    session_key = req.params['sk']
-                else:
-                    # Try POST data
-                    post_data = json.loads(req.POST.decode('utf-8'))
-                    session_key = post_data.get('sk', post_data.get('k'))
-            except:
-                raise HTTPBadRequest("Missing session key")
+                    pass
+        
+        if not session_key:
+            raise HTTPBadRequest("Missing session key")
 
         session = self.session_manager.load(session_key, self.session_factory)
         if not session:
@@ -768,47 +770,71 @@ class SyncApp:
                 client_version = req.params['v']
             else:
                 try:
-                    post_data = json.loads(req.POST.decode('utf-8'))
+                    post_data = req.get_json_data()
                     client_version = post_data.get('v', '')
                 except:
                     pass
             
-            result = handler.begin(client_version)
+            # Pass the session key to begin method so it can return it in 'sk' field
+            result = handler.begin(client_version, session_key)
             
         elif operation == "mediaChanges":
             try:
-                post_data = json.loads(req.POST.decode('utf-8'))
-                last_usn = post_data.get('lastUsn', 0)
-            except:
+                # Get the raw body data (already decompressed by get_body_data)
+                body_data = req.get_body_data()
+                
+                # Parse request (data is already decompressed)
+                request_data = json.loads(body_data.decode('utf-8'))
+                last_usn = request_data.get('lastUsn', 0)
+                logger.info(f"mediaChanges request: last_usn={last_usn}")
+            except Exception as e:
+                logger.error(f"Error parsing mediaChanges request: {e}")
                 last_usn = 0
             
             result = handler.media_changes(last_usn)
             
         elif operation == "uploadChanges":
-            # Raw binary data for zip file
-            zip_data = req.POST
+            # Raw binary data for zip file - don't try to parse as JSON
+            # Get the raw body data directly
+            zip_data = req.get_body_data()
             result = handler.upload_changes(zip_data)
             
         elif operation == "downloadFiles":
             try:
-                post_data = json.loads(req.POST.decode('utf-8'))
-                files = post_data.get('files', [])
-            except:
-                files = []
+                # Get the raw body data (already decompressed by get_body_data)
+                body_data = req.get_body_data()
+                
+                # Parse request (data is already decompressed)
+                request_data = json.loads(body_data.decode('utf-8'))
+                logger.info(f"downloadFiles request data: {request_data}")
+                
+                files = request_data.get("files", [])
+                logger.info(f"downloadFiles requesting {len(files)} files: {files}")
+                
+                result = handler.download_files(files)
+            except Exception as e:
+                logger.error(f"Error processing downloadFiles request: {e}")
+                result = handler.download_files([])
             
             # This returns raw zip data, not JSON
-            return handler.download_files(files)
+            return result
             
         elif operation == "mediaSanity":
             try:
-                post_data = json.loads(req.POST.decode('utf-8'))
-                local_count = post_data.get('local', 0)
-            except:
+                # Get the raw body data (already decompressed by get_body_data)
+                body_data = req.get_body_data()
+                
+                # Parse request (data is already decompressed)
+                request_data = json.loads(body_data.decode('utf-8'))
+                local_count = request_data.get('local', 0)
+                logger.info(f"mediaSanity request: local_count={local_count}")
+            except Exception as e:
+                logger.error(f"Error parsing mediaSanity request: {e}")
                 local_count = 0
             
             result = handler.media_sanity(local_count)
 
-        # Return JSON response for most operations
+        # Return JSON response for media sync operations (let HTTPS proxy handle compression)
         return json.dumps(result).encode('utf-8')
 
     def _handle_collection_sync(self, req):

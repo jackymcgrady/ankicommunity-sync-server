@@ -118,6 +118,75 @@ The sync server now has robust compatibility with modern Anki clients (>=2.1.57)
   - [ ] Integration tests
   - [ ] Client simulation tests
 
+## Debugging Insights: USN and Sync Protocol
+
+### USN (Update Sequence Number) Logic ✅ CRITICAL UNDERSTANDING
+**Media Sync USN Handling:**
+- Client requests `{"lastUsn": X}` expecting changes AFTER that USN, not FROM it
+- Server must return changes with `usn > lastUsn`, not `usn >= lastUsn`
+- Response `lastUsn` should be the USN of the LAST change in the batch, NOT current server USN
+- Media sync uses direct `Vec<MediaChange>` format: `[[fname, usn, sha1], ...]`
+- DO NOT wrap in custom objects like `{"files": [...], "lastUsn": Y}` - causes client loops
+
+**Collection Sync USN:**
+- Collection USN (`collection.usn()`) tracks structural changes (notes, cards, decks)
+- Media USN (`media_usn` in meta response) tracks media file changes independently
+- Both must be accurate for proper incremental sync progression
+
+### Request Parsing Consistency ✅ CRITICAL FIX
+**Issue:** Different operations used inconsistent request parsing methods causing data corruption:
+- Some used `req.POST.decode('utf-8')` (WRONG)
+- Others used `req.get_body_data()` (CORRECT)
+
+**Solution:** All operations must use `req.get_body_data()` for:
+- Consistent zstd decompression handling
+- Proper fallback for legacy clients
+- Unified error handling across all endpoints
+
+**Fixed Operations:**
+- `mediaChanges`: Now uses `req.get_body_data()` → `json.loads(body_data.decode('utf-8'))`
+- `mediaSanity`: Now uses `req.get_body_data()` → `json.loads(body_data.decode('utf-8'))`
+- `downloadFiles`: Already used correct method
+
+### Media Management Behavior ✅ EXPECTED BEHAVIOR
+**Orphaned Media After Deck Deletion:**
+- Collection deletion/emptying DOES NOT automatically remove media files
+- Media files persist until explicit "Check Media" operation in client
+- Server maintains separate media database independent of collection content
+- This prevents accidental data loss and follows Anki's design principles
+
+**Media Cleanup Workflow:**
+1. User deletes deck → Collection becomes empty
+2. Media files remain → User can recover if needed  
+3. User runs "Check Media" → Identifies unused files
+4. User chooses to delete unused files → Files moved to trash
+5. User empties trash → Files permanently deleted
+
+### Sync Loop Debugging ✅ ROOT CAUSES IDENTIFIED
+**Common Loop Patterns:**
+- Client repeatedly requests same USN → Check server USN response format
+- Infinite `mediaChanges` calls → Verify response is direct array, not wrapped object
+- Client gets unexpected data format → Check request parsing consistency
+- Media count mismatches → Verify `mediaSanity` calculations
+
+**Key Debug Points:**
+- Log exact request/response formats for failing operations
+- Check USN progression: client request → server response → next client request
+- Verify media database integrity: `SELECT COUNT(*) FROM media` vs filesystem
+- Monitor request parsing: ensure all operations use `req.get_body_data()`
+
+### Protocol Format Requirements ✅ STRICT COMPLIANCE NEEDED
+**Media Sync Response Formats:**
+- `mediaChanges`: Direct array `[[fname, usn, sha1], ...]` 
+- `mediaSanity`: `{"data": "OK", "err": ""}` for success
+- `downloadFiles`: Raw zip data (binary response)
+- `begin`: `{"data": {"usn": X, "sk": "session_key"}, "err": ""}`
+
+**Collection Sync:**
+- All responses zstd-compressed JSON
+- Meta response must include: `mod`, `scm`, `usn`, `ts`, `media_usn`, `msg`, `cont`, `empty`
+- USN fields must represent actual sequence progression, not current state
+
 ## Phase 6: Deployment & Scaling
 - [ ] Performance
   - [ ] Database optimization

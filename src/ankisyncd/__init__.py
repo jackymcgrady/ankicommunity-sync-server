@@ -1,6 +1,9 @@
 import os
 import sys
 
+# Import and alias logger as logging to match the expected import pattern
+from . import logger as logging
+
 _homepage = "https://github.com/ankicommunity/anki-sync-server.git"
 _unknown_version = "[unknown version]"
 

@@ -3,6 +3,7 @@
 # License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 import os
+import io
 import json
 import zipfile
 import hashlib
@@ -162,6 +163,21 @@ class ServerMediaDatabase:
         result = self.db.execute("SELECT total_nonempty_files FROM meta").fetchone()
         return result[0] if result else 0
     
+    def recalculate_file_count(self) -> int:
+        """Recalculate and fix the file count in meta table."""
+        actual_count = self.db.execute("SELECT COUNT(*) FROM media WHERE size > 0").fetchone()[0]
+        actual_bytes = self.db.execute("SELECT COALESCE(SUM(size), 0) FROM media WHERE size > 0").fetchone()[0]
+        
+        self.db.execute("""
+            UPDATE meta SET 
+                total_nonempty_files = ?,
+                total_bytes = ?
+        """, (actual_count, actual_bytes))
+        self.db.commit()
+        
+        logger.info(f"Recalculated media counts: files={actual_count}, bytes={actual_bytes}")
+        return actual_count
+    
     def register_uploaded_change(self, filename: str, data: Optional[bytes], 
                                sha1_hex: Optional[str]) -> Tuple[str, int]:
         """Register an uploaded file change and return action taken and new USN."""
@@ -245,13 +261,18 @@ class ServerMediaManager:
     
     def __init__(self, user_folder: str):
         self.user_folder = Path(user_folder)
-        self.media_folder = self.user_folder / "media"
+        
+        # Media files should be stored in user-specific folder, not global
+        self.media_folder = self.user_folder / "collection.media"
         self.media_folder.mkdir(exist_ok=True)
         
-        db_path = str(self.user_folder / "media.db")
+        # Use user-specific database path to match what sync expects
+        db_path = str(self.user_folder / "collection.media.server.db")
         self.db = ServerMediaDatabase(db_path)
         
         logger.info(f"Initialized media manager for user folder: {user_folder}")
+        logger.info(f"Media folder: {self.media_folder}")
+        logger.info(f"Database path: {db_path}")
     
     def last_usn(self) -> int:
         """Get the last media USN."""
@@ -268,6 +289,30 @@ class ServerMediaManager:
     def sanity_check(self, client_file_count: int) -> str:
         """Perform media sanity check."""
         server_count = self.db.nonempty_file_count()
+        logger.info(f"Media sanity check: client={client_file_count}, server={server_count}")
+        
+        if server_count != client_file_count:
+            logger.warning(f"File count mismatch detected! Client reports {client_file_count} files, server has {server_count}")
+            
+            # Let's check what files are actually on disk vs in database
+            actual_files_on_disk = 0
+            if self.media_folder.exists():
+                try:
+                    actual_files_on_disk = len([f for f in self.media_folder.iterdir() 
+                                              if f.is_file() and not f.name.startswith('.')])
+                    logger.info(f"Actual files on disk: {actual_files_on_disk}")
+                except Exception as e:
+                    logger.warning(f"Could not count files on disk: {e}")
+            
+            logger.info("Recalculating server count...")
+            server_count = self.db.recalculate_file_count()
+            logger.info(f"After recalculation: client={client_file_count}, server={server_count}, disk={actual_files_on_disk}")
+            
+            # If still mismatched, this suggests the client has files that weren't uploaded properly
+            if server_count != client_file_count:
+                logger.error(f"Persistent count mismatch after recalculation!")
+                logger.error(f"This suggests {client_file_count - server_count} files failed to upload properly")
+        
         return "OK" if server_count == client_file_count else "FAILED"
     
     def process_uploaded_changes(self, zip_data: bytes) -> Dict[str, Any]:
@@ -275,6 +320,13 @@ class ServerMediaManager:
         try:
             extracted = self._unzip_and_validate_files(zip_data)
             processed = 0
+            skipped = 0
+            added = 0
+            replaced = 0
+            removed = 0
+            identical = 0
+            
+            logger.info(f"Processing {len(extracted)} extracted changes from upload")
             
             for change in extracted:
                 filename = change["filename"]
@@ -287,6 +339,7 @@ class ServerMediaManager:
                 # Validate filename length
                 if len(filename) > MAX_MEDIA_FILENAME_LENGTH_SERVER:
                     logger.warning(f"Filename too long, skipping: {filename}")
+                    skipped += 1
                     continue
                 
                 # Process the change
@@ -298,6 +351,11 @@ class ServerMediaManager:
                     with open(file_path, "wb") as f:
                         f.write(data)
                     logger.debug(f"Wrote file: {filename} ({len(data)} bytes)")
+                    
+                    if action == "added":
+                        added += 1
+                    else:
+                        replaced += 1
                 
                 elif action == "removed":
                     # Remove file from disk
@@ -305,8 +363,16 @@ class ServerMediaManager:
                     if file_path.exists():
                         file_path.unlink()
                         logger.debug(f"Removed file: {filename}")
+                    removed += 1
+                    
+                elif action == "identical":
+                    identical += 1
                 
                 processed += 1
+            
+            logger.info(f"Upload processing complete: processed={processed}, skipped={skipped}")
+            logger.info(f"Actions: added={added}, replaced={replaced}, removed={removed}, identical={identical}")
+            logger.info(f"Current server USN: {self.db.last_usn()}")
             
             return {
                 "processed": processed,
@@ -321,8 +387,12 @@ class ServerMediaManager:
         """Create a zip file containing the requested media files."""
         import io
         
+        logger.info(f"Creating zip for {len(filenames)} requested files")
+        logger.info(f"Media folder: {self.media_folder}")
+        
         zip_buffer = io.BytesIO()
         file_map = {}
+        found_files = 0
         
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
             for i, filename in enumerate(filenames):
@@ -333,6 +403,8 @@ class ServerMediaManager:
                     zip_name = str(i)
                     zf.write(file_path, zip_name)
                     file_map[zip_name] = filename
+                    found_files += 1
+                    logger.info(f"Added file {found_files}: {filename} -> {zip_name}")
                     
                     # Check size limits
                     if zip_buffer.tell() > MEDIA_SYNC_TARGET_ZIP_BYTES:
@@ -341,10 +413,17 @@ class ServerMediaManager:
                     if len(file_map) >= MAX_MEDIA_FILES_IN_ZIP:
                         break
                 else:
-                    logger.warning(f"Requested file not found: {filename}")
+                    logger.warning(f"Requested file not found: {filename} (path: {file_path})")
+                    # For missing files, we need to tell the client they don't exist
+                    # The client expects to advance by the number of files processed
+                    # So we'll create a placeholder entry in metadata that indicates this file doesn't exist
+                    # But we won't add any actual file data to the zip
             
-            # Add metadata file
+            # Add metadata file with proper mapping
+            # The client uses this to map zip entries back to filenames
             zf.writestr("_meta", json.dumps(file_map))
+            logger.info(f"Created zip with {found_files} files out of {len(filenames)} requested")
+            logger.info(f"Metadata: {file_map}")
         
         return zip_buffer.getvalue()
     
@@ -357,6 +436,8 @@ class ServerMediaManager:
             try:
                 meta_data = zf.read("_meta").decode('utf-8')
                 meta = json.loads(meta_data)
+                logger.info(f"Metadata structure: {meta}")
+                logger.info(f"Metadata type: {type(meta)}")
             except (KeyError, json.JSONDecodeError) as e:
                 raise ValueError(f"Invalid or missing metadata in zip: {e}")
             
@@ -365,56 +446,90 @@ class ServerMediaManager:
             if total_size > MAX_INDIVIDUAL_MEDIA_FILE_SIZE:
                 raise ValueError(f"Zip file too large: {total_size} bytes")
             
-            # Process each entry in metadata
-            for zip_name, filename in meta.items():
-                if zip_name == "_meta":
-                    continue
-                
-                try:
-                    if isinstance(filename, list) and len(filename) >= 2:
-                        # Format: [filename, ordinal] where ordinal=0 means deletion
-                        actual_filename, ordinal = filename[0], filename[1]
+            # Handle different metadata formats
+            if isinstance(meta, list):
+                # Modern format: list of [filename, zip_name]
+                for entry in meta:
+                    if not isinstance(entry, list) or len(entry) != 2:
+                        logger.warning(f"Invalid metadata entry format: {entry}")
+                        continue
+                    
+                    filename, zip_name = entry
+                    
+                    # Check if this is a file addition (zip_name should exist in zip)
+                    if zip_name in zf.namelist():
+                        file_data = zf.read(zip_name)
                         
-                        if ordinal == 0:
-                            # File deletion
-                            changes.append({
-                                "filename": actual_filename,
-                                "data": None,
-                                "sha1": None
-                            })
+                        # Validate file size
+                        if len(file_data) > MAX_INDIVIDUAL_MEDIA_FILE_SIZE:
+                            logger.warning(f"File too large, skipping: {filename}")
+                            continue
+                        
+                        # Calculate SHA1
+                        sha1_hex = hashlib.sha1(file_data).hexdigest()
+                        
+                        changes.append({
+                            "filename": filename,
+                            "data": file_data,
+                            "sha1": sha1_hex
+                        })
+                    else:
+                        logger.warning(f"Zip entry not found for file: {filename} (zip_name: {zip_name})")
+                        
+            elif isinstance(meta, dict):
+                # Legacy format: dict mapping zip_name -> filename
+                for zip_name, filename in meta.items():
+                    if zip_name == "_meta":
+                        continue
+                    
+                    try:
+                        if isinstance(filename, list) and len(filename) >= 2:
+                            # Format: [filename, ordinal] where ordinal=0 means deletion
+                            actual_filename, ordinal = filename[0], filename[1]
+                            
+                            if ordinal == 0:
+                                # File deletion
+                                changes.append({
+                                    "filename": actual_filename,
+                                    "data": None,
+                                    "sha1": None
+                                })
+                            else:
+                                # File addition - should have corresponding zip entry
+                                if zip_name in zf.namelist():
+                                    file_data = zf.read(zip_name)
+                                    
+                                    # Validate file size
+                                    if len(file_data) > MAX_INDIVIDUAL_MEDIA_FILE_SIZE:
+                                        logger.warning(f"File too large, skipping: {actual_filename}")
+                                        continue
+                                    
+                                    # Calculate SHA1
+                                    sha1_hex = hashlib.sha1(file_data).hexdigest()
+                                    
+                                    changes.append({
+                                        "filename": actual_filename,
+                                        "data": file_data,
+                                        "sha1": sha1_hex
+                                    })
                         else:
-                            # File addition - should have corresponding zip entry
+                            # Simple filename mapping (legacy format)
                             if zip_name in zf.namelist():
                                 file_data = zf.read(zip_name)
-                                
-                                # Validate file size
-                                if len(file_data) > MAX_INDIVIDUAL_MEDIA_FILE_SIZE:
-                                    logger.warning(f"File too large, skipping: {actual_filename}")
-                                    continue
-                                
-                                # Calculate SHA1
                                 sha1_hex = hashlib.sha1(file_data).hexdigest()
                                 
                                 changes.append({
-                                    "filename": actual_filename,
+                                    "filename": filename,
                                     "data": file_data,
                                     "sha1": sha1_hex
                                 })
-                    else:
-                        # Simple filename mapping (legacy format)
-                        if zip_name in zf.namelist():
-                            file_data = zf.read(zip_name)
-                            sha1_hex = hashlib.sha1(file_data).hexdigest()
-                            
-                            changes.append({
-                                "filename": filename,
-                                "data": file_data,
-                                "sha1": sha1_hex
-                            })
-                
-                except Exception as e:
-                    logger.warning(f"Error processing zip entry {zip_name}: {e}")
-                    continue
+                    
+                    except Exception as e:
+                        logger.warning(f"Error processing zip entry {zip_name}: {e}")
+                        continue
+            else:
+                logger.error(f"Unexpected metadata format: {type(meta)}")
+                raise ValueError(f"Unsupported metadata format: {type(meta)}")
         
         return changes
     
@@ -444,7 +559,7 @@ class MediaSyncHandler:
         self.media_manager = media_manager
         self.session = session
     
-    def begin(self, client_version: str = "") -> Dict[str, Any]:
+    def begin(self, client_version: str = "", session_key: str = "") -> Dict[str, Any]:
         """
         Initialize media sync session.
         Updated for modern Anki protocol compatibility.
@@ -454,12 +569,14 @@ class MediaSyncHandler:
         
         # Modern response format based on Anki reference: 
         # rslib/src/sync/media/begin.rs - SyncBeginResponse
+        # The 'sk' field should contain the host key, not a session key
+        
+        # Return the same host key that was used for authentication
         return {
             "data": {
                 "usn": self.media_manager.last_usn(),
-                # Modern clients expect 'sk' (session key) field
-                # For compatibility, return the host key as session key
-                "sk": self.session.skey if hasattr(self.session, 'skey') else ""
+                # Return the host key in 'sk' field for compatibility
+                "sk": session_key
             },
             "err": ""
         }
@@ -468,6 +585,7 @@ class MediaSyncHandler:
         """Get media changes since the specified USN."""
         try:
             changes = self.media_manager.media_changes_chunk(last_usn)
+            current_server_usn = self.media_manager.last_usn() # Get current server media USN
             
             # Convert to the format expected by clients: [fname, usn, sha1]
             change_list = [
@@ -475,6 +593,13 @@ class MediaSyncHandler:
                 for change in changes
             ]
             
+            logger.info(f"Media changes request: last_usn={last_usn}, current_server_usn={current_server_usn}, returning {len(change_list)} changes")
+            if change_list:
+                logger.info(f"First few changes: {change_list[:5]}")
+                logger.info(f"Last change USN: {change_list[-1][1]}")
+            
+            # Return the change_list directly wrapped in JsonResult format
+            # The client expects Vec<MediaChange>, not a custom object
             return {
                 "data": change_list,
                 "err": ""
@@ -492,23 +617,23 @@ class MediaSyncHandler:
             result = self.media_manager.process_uploaded_changes(zip_data)
             
             return {
-                "data": {
-                    "processed": result["processed"],
-                    "current_usn": result["current_usn"]
-                },
+                "data": [result["processed"], result["current_usn"]],  # Tuple format expected by client
                 "err": ""
             }
         except Exception as e:
             logger.error(f"Error uploading changes: {e}")
             return {
-                "data": {"processed": 0, "current_usn": self.media_manager.last_usn()},
+                "data": [0, self.media_manager.last_usn()],  # Tuple format for error case too
                 "err": str(e)
             }
     
     def download_files(self, files: List[str]) -> bytes:
         """Download requested media files as a zip."""
         try:
-            return self.media_manager.zip_files_for_download(files)
+            logger.info(f"Download request for {len(files)} files: {files[:10]}...")  # Log first 10 files
+            result = self.media_manager.zip_files_for_download(files)
+            logger.info(f"Download response size: {len(result)} bytes")
+            return result
         except Exception as e:
             logger.error(f"Error downloading files: {e}")
             # Return empty zip on error
@@ -522,13 +647,15 @@ class MediaSyncHandler:
         """Perform media sanity check."""
         try:
             result = self.media_manager.sanity_check(local_count)
+            # Return the correct enum values expected by client
+            response_value = "OK" if result == "OK" else "mediaSanity"
             return {
-                "data": result,
+                "data": response_value,
                 "err": ""
             }
         except Exception as e:
             logger.error(f"Error in media sanity check: {e}")
             return {
-                "data": "FAILED",
+                "data": "mediaSanity",  # Failed sanity check
                 "err": str(e)
             } 

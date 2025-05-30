@@ -141,52 +141,103 @@ class HTTPSProxyHandler(BaseHTTPRequestHandler):
                     print(f"Raw length: {len(response_data)} bytes")
                     print(f"Raw preview: {response_data[:50]}")
                     
-                    try:
-                        decompressor = zstd.ZstdDecompressor()
-                        decompressed = decompressor.decompress(response_data)
-                        print(f"Decompressed: {decompressed}")
-                        
-                        # Send response with proper headers including original size
-                        self.send_response(response.getcode())
-                        self.send_header('Content-Type', 'application/octet-stream')
-                        self.send_header('Content-Length', str(len(response_data)))
-                        self.send_header('anki-original-size', str(len(decompressed)))
-                        self.end_headers()
-                        self.wfile.write(response_data)
-                        
-                    except Exception as e:
-                        print(f"Failed to decompress: {e}")
-                        # If decompression fails, send as-is
-                        self.send_response(response.getcode())
-                        self.send_header('Content-Type', 'application/octet-stream')
-                        self.send_header('Content-Length', str(len(response_data)))
-                        self.end_headers()
-                        self.wfile.write(response_data)
+                    # Always ensure we have the anki-original-size header
+                    original_size = None
+                    final_response_data = response_data
                     
-                    print(f"[HTTPS PROXY] Response sent: {response.getcode()}, {len(response_data)} bytes")
+                    try:
+                        # Try to decompress first to get original size
+                        decompressor = zstd.ZstdDecompressor()
+                        decompressed_data = decompressor.decompress(response_data)
+                        original_size = len(decompressed_data)
+                        print(f"Response is already compressed. Decompressed size: {original_size}")
+                        print(f"Decompressed preview: {decompressed_data[:100]}")
+                    except Exception as decomp_error:
+                        print(f"Not compressed or decompression failed: {decomp_error}")
+                        # Check if it's JSON that needs compression for media sync endpoints
+                        try:
+                            # Try to parse as JSON
+                            decoded_text = response_data.decode('utf-8')
+                            json.loads(decoded_text)
+                            print(f"Response is uncompressed JSON")
+                            
+                            # For media sync endpoints, compress the JSON
+                            if self.path.startswith('/msync/'):
+                                print(f"Compressing media sync JSON response")
+                                compressor = zstd.ZstdCompressor()
+                                compressed_response = compressor.compress(response_data)
+                                original_size = len(response_data)
+                                final_response_data = compressed_response
+                                print(f"Compressed {original_size} bytes to {len(final_response_data)} bytes")
+                            else:
+                                # Collection sync - should already be compressed by backend
+                                print(f"Collection sync response should be compressed by backend")
+                                original_size = len(response_data)
+                                final_response_data = response_data
+                        except Exception as json_error:
+                            print(f"Not JSON either: {json_error}")
+                            # Binary response (like zip files)
+                            print(f"Binary response detected, checking endpoint type")
+                            
+                            # All media sync endpoints should compress binary responses
+                            if self.path.startswith('/msync/'):
+                                print(f"Media sync endpoint - compressing binary response")
+                                compressor = zstd.ZstdCompressor()
+                                compressed_response = compressor.compress(response_data)
+                                original_size = len(response_data)
+                                final_response_data = compressed_response
+                                print(f"Compressed binary {original_size} bytes to {len(final_response_data)} bytes")
+                            else:
+                                # Collection sync binary - use as is
+                                original_size = len(response_data)
+                                final_response_data = response_data
+                                print(f"Collection sync binary response, using raw size: {original_size}")
+                    
+                    # Send response with proper headers
+                    self.send_response(response.getcode())
+                    self.send_header('Content-Type', 'application/octet-stream')
+                    self.send_header('Content-Length', str(len(final_response_data)))
+                    
+                    # ALWAYS add the anki-original-size header
+                    if original_size is not None:
+                        self.send_header('anki-original-size', str(original_size))
+                        print(f"[HTTPS PROXY] Added anki-original-size header: {original_size}")
+                    else:
+                        # Fallback - use the final response size
+                        self.send_header('anki-original-size', str(len(final_response_data)))
+                        print(f"[HTTPS PROXY] Fallback anki-original-size header: {len(final_response_data)}")
+                    
+                    self.end_headers()
+                    self.wfile.write(final_response_data)
+                    
+                    print(f"[HTTPS PROXY] Response sent: {response.getcode()}, {len(final_response_data)} bytes")
                     
             except urllib.error.HTTPError as http_err:
                 # Handle HTTP error responses from backend
                 print(f"[HTTPS PROXY] Backend returned HTTP error: {http_err.code} {http_err.reason}")
                 response_data = http_err.read() if http_err.fp else b''
                 
+                # Determine original size for error responses
+                original_size = None
+                try:
+                    # Try to decompress error response
+                    decompressor = zstd.ZstdDecompressor()
+                    decompressed = decompressor.decompress(response_data)
+                    original_size = len(decompressed)
+                    print(f"[HTTPS PROXY] Error response decompressed size: {original_size}")
+                except:
+                    # If not compressed, use raw size
+                    original_size = len(response_data)
+                    print(f"[HTTPS PROXY] Error response raw size: {original_size}")
+                
                 # Forward the error response to client
                 self.send_response(http_err.code)
                 self.send_header('Content-Type', 'application/octet-stream')
                 self.send_header('Content-Length', str(len(response_data)))
                 
-                # Add original size header if we have response data
-                if response_data:
-                    try:
-                        # Try to get original size from decompression
-                        decompressor = zstd.ZstdDecompressor()
-                        decompressed = decompressor.decompress(response_data)
-                        self.send_header('anki-original-size', str(len(decompressed)))
-                        print(f"[HTTPS PROXY] Error response decompressed: {decompressed}")
-                    except:
-                        # If not compressed, use raw size
-                        self.send_header('anki-original-size', str(len(response_data)))
-                        print(f"[HTTPS PROXY] Error response (raw): {response_data}")
+                # ALWAYS add the anki-original-size header for error responses too
+                self.send_header('anki-original-size', str(original_size))
+                print(f"[HTTPS PROXY] Added anki-original-size header for error: {original_size}")
                 
                 self.end_headers()
                 if response_data:
