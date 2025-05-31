@@ -404,8 +404,9 @@ class SyncUserSession:
             return self.collection_handler
         elif operation in ["begin", "mediaChanges", "mediaSanity", "uploadChanges", "downloadFiles"]:
             if not self.media_handler:
-                # Initialize modern media manager
-                user_folder = os.path.dirname(self.path)
+                # Initialize modern media manager with the user's directory path
+                # self.path is already the user directory (e.g., ./collections/users/test)
+                user_folder = self.path
                 self.media_manager = ServerMediaManager(user_folder)
                 self.media_handler = MediaSyncHandler(self.media_manager, self)
             return self.media_handler
@@ -708,14 +709,33 @@ class SyncApp:
         # cgi file can only be read once,and will be blocked after being read once more
         # so i call SyncRequest.parse only once,and bind its return result to properties
         # POST and params (set return result as property values)
-        if req.path.startswith("/msync/"):
-            # Media sync endpoint
-            return self._handle_media_sync(req)
-        elif req.path.startswith("/sync/"):
-            # Collection sync endpoint
-            return self._handle_collection_sync(req)
-        else:
-            raise HTTPBadRequest("Invalid sync endpoint")
+        
+        # Log sync attempt start
+        sync_start_time = time.time()
+        client_ip = req.environ.get('REMOTE_ADDR', 'unknown')
+        user_agent = req.environ.get('HTTP_USER_AGENT', 'unknown')
+        
+        try:
+            if req.path.startswith("/msync/"):
+                # Media sync endpoint
+                result = self._handle_media_sync(req)
+                operation = req.path.split('/')[-1] if '/' in req.path else 'unknown'
+                logger.info(f"✅ MEDIA SYNC SUCCESS: {operation} from {client_ip} in {time.time() - sync_start_time:.2f}s")
+                return result
+            elif req.path.startswith("/sync/"):
+                # Collection sync endpoint
+                result = self._handle_collection_sync(req)
+                operation = req.path.split('/')[-1] if '/' in req.path else 'unknown'
+                logger.info(f"✅ COLLECTION SYNC SUCCESS: {operation} from {client_ip} in {time.time() - sync_start_time:.2f}s")
+                return result
+            else:
+                logger.warning(f"❌ SYNC FAILED: Invalid endpoint {req.path} from {client_ip}")
+                raise HTTPBadRequest("Invalid sync endpoint")
+                
+        except Exception as e:
+            operation = req.path.split('/')[-1] if '/' in req.path else 'unknown'
+            logger.warning(f"❌ SYNC FAILED: {operation} from {client_ip} - {type(e).__name__}: {str(e)}")
+            raise
 
     def _handle_media_sync(self, req):
         """Handle media sync endpoints (/msync/)."""

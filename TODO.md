@@ -309,9 +309,59 @@ This combined approach should give us good coverage and confidence in the server
 
 What are your thoughts on this testing plan? We can adjust it based on your priorities.
 
+## Critical Database Management
+
+### ⚠️ WAL File Handling - CRITICAL LESSON LEARNED
+**NEVER manually delete SQLite WAL files without proper checkpointing!**
+
+**Root Cause Discovered**: The sync conflict issue was caused by deleting `collections/*-wal` files during cleanup, which contained uncommitted deletions (~200 cards). This left the client and server databases in an inconsistent state:
+- Client: 60 cards + 395 graves (deletions recorded locally)  
+- Server: 257 cards + 0 graves (deletions lost when WAL deleted)
+
+**Prevention**: Always checkpoint WAL files before cleanup:
+```bash
+# Proper WAL cleanup procedure:
+sqlite3 collection.anki2 "PRAGMA wal_checkpoint(TRUNCATE);"
+# Only then delete .wal and .shm files
+```
+
+**Database Files Using WAL Mode**:
+- Collection databases: `collection.anki2`
+- Media databases: `collection.media.db`, `collection.media.server.db`
+- Session database: `session.db`
 
 ## Notes
 - Priority: Media sync implementation is critical for latest Anki compatibility
 - Testing should be continuous throughout development
 - Each completed feature should be tested against latest Anki Desktop client
 - Document all protocol changes and new features 
+
+### ✅ Sync Efficiency Confirmed
+**Observed Behavior (2025-05-31)**: Single sync session processes multiple card studies in batches:
+- 6 cards synced in one `applyChunk` transaction (280 bytes compressed → 962 bytes raw)
+- Complete sync cycle: 7 HTTP requests regardless of number of cards studied
+- Protocol designed for scalability - thousands of users supported with minimal per-user overhead
+- Anki batches local changes and syncs periodically, NOT after each card study
+
+### ✅ Logging Configuration  
+**Balanced Logging (2025-05-31)**: Improved logging for production monitoring:
+- **Sync Operations**: Show one log line per sync attempt (success/failure) with timing
+- **Media Manager**: Reduced verbose spam while keeping errors  
+- **Collection Sync**: Keep important sync operations visible
+- **Format**: `✅ COLLECTION SYNC SUCCESS: meta from 127.0.0.1 in 0.05s` or `❌ SYNC FAILED: hostKey from 127.0.0.1 - HTTPForbidden: Missing credentials`
+- **Fixed**: Eliminated `isMac is deprecated` warnings by using modern `is_mac` function
+- **For Debug**: Change `stdlib_logging.INFO` to `stdlib_logging.DEBUG` in logger.py
+
+### ✅ Directory Structure Cleanup
+**Clean Organization (2025-05-31)**: Reorganized server-side data structure:
+- **Removed Legacy Files**: Deleted duplicate/empty files (`collection.anki2`, `collection.media.db2`, `media.db`)
+- **Removed Duplicate Media**: Deleted root-level `collection.media/` (identical to user's media folder)
+- **Created Users Directory**: Moved user data from `collections/test/` to `collections/users/test/`
+- **Updated Configuration**: Changed `data_root = ./collections/users` in `src/ankisyncd.conf`
+- **Fixed Media Path Bug**: Corrected media manager initialization in `sync_app.py` line 407 (`user_folder = self.path` instead of `os.path.dirname(self.path)`)
+- **Removed Duplicate User Directory**: Deleted outdated `collections/test/` after confirming `collections/users/test/` contains current data
+- **Session Cache Issue**: Fixed one-way sync failure by clearing cached sessions (`session.db*`) that had old incorrect paths
+- **Media Files Location**: All media files now correctly stored in `collections/users/{username}/collection.media/`
+- **Final Structure**: Clean organization with only `collections/users/` containing all user data
+
+**Important**: After path changes, always clear session cache (`rm session.db*`) and restart server to avoid stale session paths causing sync failures. 

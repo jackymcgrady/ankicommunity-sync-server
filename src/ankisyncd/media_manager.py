@@ -536,7 +536,10 @@ class ServerMediaManager:
     def _normalize_filename(self, filename: str) -> str:
         """Normalize filename for cross-platform compatibility."""
         # Perform unicode normalization
-        if hasattr(anki.utils, 'isMac') and anki.utils.isMac:
+        if hasattr(anki.utils, 'is_mac') and anki.utils.is_mac:
+            filename = unicodedata.normalize("NFD", filename)
+        elif hasattr(anki.utils, 'isMac') and anki.utils.isMac:
+            # Fallback for older Anki versions
             filename = unicodedata.normalize("NFD", filename)
         else:
             filename = unicodedata.normalize("NFC", filename)
