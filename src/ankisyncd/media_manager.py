@@ -456,8 +456,16 @@ class ServerMediaManager:
                     
                     filename, zip_name = entry
                     
-                    # Check if this is a file addition (zip_name should exist in zip)
-                    if zip_name in zf.namelist():
+                    if zip_name is None:
+                        # File deletion - zip_name is None
+                        changes.append({
+                            "filename": filename,
+                            "data": None,
+                            "sha1": None
+                        })
+                        logger.debug(f"Marked for deletion: {filename}")
+                    elif zip_name in zf.namelist():
+                        # File addition/update - zip_name should exist in zip
                         file_data = zf.read(zip_name)
                         
                         # Validate file size
@@ -473,9 +481,9 @@ class ServerMediaManager:
                             "data": file_data,
                             "sha1": sha1_hex
                         })
+                        logger.debug(f"Marked for addition/update: {filename}")
                     else:
                         logger.warning(f"Zip entry not found for file: {filename} (zip_name: {zip_name})")
-                        
             elif isinstance(meta, dict):
                 # Legacy format: dict mapping zip_name -> filename
                 for zip_name, filename in meta.items():
