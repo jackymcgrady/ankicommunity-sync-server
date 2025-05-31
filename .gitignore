@@ -231,9 +231,14 @@ $RECYCLE.BIN/
 
 # End of https://www.toptal.com/developers/gitignore/api/windows,linux,macos,python,jupyternotebooks
 
-# Project specific
-Anki_Architect_reference/
-.cursor/rules/
+# Project specific directories
+/Anki_Architect_reference/
+/.cursor/
+/tests/
+/collections/
+/venv/
+/config/*
+!/config/.env.example
 
 # Python
 __pycache__/
@@ -256,6 +261,7 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+MANIFEST
 
 # Virtual Environment
 .env
@@ -269,21 +275,47 @@ ENV/
 .vscode/
 *.swp
 *.swo
+*#*#
+*.#*
 
 # OS
 .DS_Store
-.DS_Store?
+.AppleDouble
+.LSOverride
 ._*
 .Spotlight-V100
 .Trashes
-ehthumbs.db
 Thumbs.db
+ehthumbs.db
+Desktop.ini
 
 # SQLite
 *.db
 *.db-*
 *.sqlite3
-*.sqlite3-*
+*.sqlite3-journal
 
 # Logs
 *.log
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Test / Coverage
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Documentation
+docs/_build/
+/site/
+
+# Version file
+/ankisyncd/_version.py
