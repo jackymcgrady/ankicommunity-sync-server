@@ -1,6 +1,6 @@
 # Anki Sync Server
 
-A modern, compatible sync server for Anki that supports the latest protocol (>=2.1.57).
+A modern, compatible sync server for Anki that supports the latest protocol (>=2.1.57). Still under development, with only Anki Mac Client being tested against.
 
 ## Features
 
@@ -72,10 +72,9 @@ server {
 
 ### Anki Desktop (>=2.1.57)
 
-1. Install the "Custom Sync Server Redirector" addon (code: 358444159)
-2. Configure the addon with your server URL
+In preference - syncing, fill in your sync server address:port
 
-### AnkiDroid
+### AnkiDroid (not yet tested)
 
 In AnkiDroid settings:
 1. Advanced → Custom sync server
