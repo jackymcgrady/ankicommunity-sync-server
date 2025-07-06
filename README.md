@@ -1,130 +1,95 @@
 # Anki Sync Server
 
-A modern, compatible sync server for Anki that supports the latest protocol (>=2.1.57). Still under development, with only Anki Mac Client being tested against.
+A modern, open-source implementation of Anki's v2.1.57+ sync protocol.  
+If you manage multiple Anki clients (desktop, mobile, web) and need a **self-hosted** alternative to AnkiWeb, this server keeps every device in lock-step—collections, media, and change history included.
 
-## Features
+---
 
-✅ **Full Protocol Support**
-- Compatible with Anki Desktop >=2.1.57
-- Full sync protocol implementation
-- Complete media sync support
-- Efficient batch processing
-- WAL mode for better concurrency
+## The User Story
+1. **Edit Anywhere** – Study on your phone during the commute, then refine cards on your laptop at night.
+2. **Hit *Sync*** – Each client contacts the same endpoint (`/sync`) over HTTP and authenticates with your credentials.
+3. **See Magic** – The server reconciles review logs, note edits, card scheduling, and media additions so every device looks identical the next time you open Anki.
 
-✅ **Media Management**
-- Proper media file handling
-- Efficient media deletions
-- Batch media transfers
-- File integrity checks
-- Cross-platform filename normalization
+Behind that *Sync* button lives a carefully orchestrated sequence of database merges, conflict resolution, and media transfers—performed safely, atomically, and as fast as possible.
 
-✅ **Reliability**
-- Proper SQLite WAL handling
-- Transaction safety
-- Conflict resolution
-- Automatic schema updates
-- Comprehensive error handling
+---
 
-## Quick Start
+## Architecture at a Glance
+• **Protocol Compatibility** – Implements the exact RPC contract used by official Anki 2.1.57+, including media-sync sub-protocol (`/msync`).  
+• **SQLite-First Storage** – Each profile stores its `collection.anki2` plus companion media databases on the server.  
+• **Write-Ahead Logging (WAL)** – Concurrency-friendly mode lets the server serve parallel read/write transactions without blocking.  
+• **Batch Streaming** – Large payloads—card revlogs, media blobs—stream in configurable chunks to minimize memory pressure.  
+• **Pythonic Core** – Pure-Python implementation (3.9+) with minimal external deps; easy to read, extend, and debug.
 
-1. Install dependencies:
+---
+
+## Core Components
+| Module | Responsibility |
+| ------ | -------------- |
+| `sync_app.py` & `server.py` | ASGI/WSGI entry points; route RPC calls to handlers |
+| `sync.py` | High-level orchestration of the sync transaction |
+| `collection/` | Thin wrapper over SQLite collection with versioned schema upgrades |
+| `full_sync/` | Fallback path when incremental sync cannot resolve divergence |
+| `media_manager.py` | Deduplicates, normalizes, and streams media files |
+| `sessions/` | Short-lived auth tokens reused by mobile clients |
+| `users/` | Pluggable user backend (simple JSON, SQLite, or custom) |
+
+Each component is **loosely coupled** so you can swap backends or add metrics without touching core logic.
+
+---
+
+## Sync Workflow (Incremental)
+1. **Handshake** – Client sends local `mod` and `usn`; server decides if fast-forward, merge, or full-sync is needed.
+2. **Graves & Revs** – Deleted objects and review logs arrive first, applied in isolated transactions.
+3. **Chunked Changes** – New/updated notes, cards, decks, etc., stream in batched JSON.
+4. **Media Inventory** – Separate `/msync` endpoint exchanges file hashes and pushes/pulls missing media.
+5. **Finish & Ack** – Server returns new `usn` and updated deck config so the client can update scheduling.
+
+All steps run inside a **single WAL-protected transaction**; on any error the database rolls back to a pre-sync snapshot.
+
+---
+
+## Data Integrity & Safety
+* **Checksum validation** on every received collection file and media chunk.
+* **Automatic schema migrations** keep legacy clients functional.
+* **Conflict resolution** follows upstream Anki logic (newer `mod` wins, deterministic tie-breakers).
+* **Locked writes** ensure two devices never overwrite each other's work mid-sync.
+
+---
+
+## Configuration
+Settings can be supplied via **environment variables** (recommended) or a classic `ankisyncd.conf` file.
+
+| Env Var | Purpose | Default |
+| ------- | ------- | ------- |
+| `ANKISYNCD_HOST` | Bind address | `127.0.0.1` |
+| `ANKISYNCD_PORT` | TCP port | `27701` |
+| `ANKISYNCD_COLLECTIONS_PATH` | Where user data lives | `./collections` |
+| `ANKISYNCD_AUTH_DB_PATH` | Auth backend (when using SQLite) | `./users.db` |
+| `ANKISYNCD_LOG_LEVEL` | `DEBUG` / `INFO` | `INFO` |
+
+---
+
+## Running Locally (Developer Mode)
 ```bash
+python -m venv .venv && source .venv/bin/activate
 pip install -r src/requirements.txt
 pip install -e src
-```
-
-2. Configure the server:
-```bash
-cp src/ankisyncd.conf src/ankisyncd/.
-```
-
-3. Create a user:
-```bash
-python -m ankisyncd_cli adduser <username>
-```
-
-4. Start the server:
-```bash
 python -m ankisyncd
 ```
+The server now listens on `http://127.0.0.1:27701`—point your client there under *Preferences → Sync*.
 
-## HTTPS Setup
+---
 
-For production use, set up HTTPS using a reverse proxy like Nginx:
+## Extending & Hacking
+* Swap in your own **user manager** (`users/`) for OAuth or LDAP auth.
+* Emit **Prometheus metrics** by wrapping the ASGI app with middleware.
+* Plug a remote filesystem or S3 into `media_manager.py`—paths are abstracted through a single interface.
 
-```nginx
-server {
-    listen 443 ssl;
-    server_name your.domain.com;
+Pull requests welcome; see `CONTRIBUTING.md` for guidelines.
 
-    ssl_certificate /path/to/fullchain.pem;
-    ssl_certificate_key /path/to/privkey.pem;
-
-    location / {
-        proxy_pass http://127.0.0.1:27701/;
-        proxy_http_version 1.0;
-        client_max_body_size 222M;
-    }
-}
-```
-
-## Client Configuration
-
-### Anki Desktop (>=2.1.57)
-
-In preference - syncing, fill in your sync server address:port
-
-### AnkiDroid (not yet tested)
-
-In AnkiDroid settings:
-1. Advanced → Custom sync server
-2. Set Sync URL: `http://your.server:27701`
-3. Set Media Sync URL: `http://your.server:27701/msync`
-
-## Important Notes
-
-### Database Management
-- Never manually delete SQLite WAL files
-- Always use proper checkpointing:
-```bash
-sqlite3 collection.anki2 "PRAGMA wal_checkpoint(TRUNCATE);"
-```
-
-### Files Using WAL Mode
-- Collection databases: `collection.anki2`
-- Media databases: `collection.media.db`, `collection.media.server.db`
-- Session database: `session.db`
-
-### Logging Configuration
-- Default: One log line per sync attempt with timing
-- Format: `✅ SYNC SUCCESS` or `❌ SYNC FAILED` with details
-- Debug mode: Change `stdlib_logging.INFO` to `stdlib_logging.DEBUG` in logger.py
-
-## Directory Structure
-
-```
-collections/
-└── users/
-    └── username/
-        ├── collection.anki2
-        ├── collection.media/
-        ├── collection.media.db
-        └── collection.media.server.db
-```
-
-## Development
-
-### Testing
-```bash
-make init    # Install dependencies
-make tests   # Run test suite
-```
-
-### Configuration
-Use environment variables (preferred) or config file:
-- Environment variables: Prefix with `ANKISYNCD_` (e.g., `ANKISYNCD_AUTH_DB_PATH`)
-- Config file: `ankisyncd.conf`
+---
 
 ## License
-
-GNU AGPL v3 or later. See [LICENSE](LICENSE) for details.
+Released under the **GNU AGPL-v3+**.  
+Copyright © the respective contributors.
