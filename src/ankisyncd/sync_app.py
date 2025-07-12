@@ -454,10 +454,10 @@ class SyncRequest:
         return self._sync_header
     
     def get_body_data(self):
-        """Get and decompress the request body."""
+        """Get and decompress the request body without blocking when CONTENT_LENGTH is absent."""
         if self._data is not None:
             return self._data
-            
+
         content_length_str = self.environ.get("CONTENT_LENGTH")
         logger.info(f"Raw CONTENT_LENGTH header: '{content_length_str}'")
         if not content_length_str:  # Handles None or empty string
@@ -470,13 +470,46 @@ class SyncRequest:
                 content_length = 0
 
         logger.info(f"Parsed content_length: {content_length}")
-        if content_length == 0:
-            logger.info("CONTENT_LENGTH is 0, returning empty JSON and skipping body processing")
+
+        transfer_encoding = self.environ.get('HTTP_TRANSFER_ENCODING', '').lower()
+        logger.info(f"Transfer-Encoding header: '{transfer_encoding}'")
+
+        # If chunked transfer encoding, manually decode the chunks (wsgiref lacks support)
+        if content_length == 0 and 'chunked' in transfer_encoding:
+            logger.info("Handling chunked request body manually")
+            raw_chunks = b''
+            inp = self.environ['wsgi.input']
+            while True:
+                # Read chunk size line
+                size_line = inp.readline()
+                if not size_line:
+                    break  # EOF
+                size_line = size_line.strip()
+                try:
+                    chunk_size = int(size_line, 16)
+                except ValueError:
+                    logger.warning(f"Malformed chunk size: {size_line}")
+                    break
+                if chunk_size == 0:
+                    # Discard trailing CRLF after last chunk
+                    inp.readline()
+                    break
+                chunk = inp.read(chunk_size)
+                raw_chunks += chunk
+                # Discard trailing CRLF
+                inp.read(2)
+            raw_data = raw_chunks
+        elif content_length == 0:
+            logger.info("CONTENT_LENGTH is 0/absent – treating request body as empty to avoid blocking (non-chunked).")
+            raw_data = b""
+        else:
+            raw_data = self.environ["wsgi.input"].read(content_length)
+
+        if not raw_data:
+            logger.info("Request body is empty – treating as empty JSON.")
             self._data = b"{}"
             return self._data
-            
-        raw_data = self.environ["wsgi.input"].read(content_length)
-        
+
         # Try multiple decompression methods
         try:
             # Try zstd decompression first (modern Anki)
@@ -515,8 +548,19 @@ class SyncRequest:
                     "u": u_match.group(1).strip(),
                     "p": p_match.group(1).strip()
                 }
-                logger.info(f"Legacy form data parsed: u='{result['u']}', p='****'")
+                logger.info(f"Legacy form data parsed (multipart): u='{result['u']}', p='****'")
                 return json.dumps(result).encode('utf-8')
+
+            # Fallback #2: application/x-www-form-urlencoded style 'u=..&p=..'
+            from urllib.parse import parse_qs
+            qs = parse_qs(data_str)
+            if 'u' in qs and 'p' in qs:
+                result = {"u": qs['u'][0], "p": qs['p'][0]}
+                logger.info(f"Legacy form data parsed (urlencoded): u='{result['u']}', p='****'")
+                return json.dumps(result).encode('utf-8')
+
+            # Log preview for debugging
+            logger.debug(f"Legacy parse failed. Raw data preview: {data_str[:150]}")
         except Exception as e:
             logger.error(f"Legacy form data parsing exception: {e}")
         
@@ -592,7 +636,15 @@ class chunked(object):
         )
         try:
             w = self.__wrapped__(*args, **kwargs)
-            resp = Response(w)
+
+            # NEW: allow handler to return (body, original_size)
+            if isinstance(w, tuple) and len(w) == 2:
+                body, orig = w
+                resp = Response(body, content_type='application/octet-stream')
+                resp.headers['anki-original-size'] = str(orig)
+            else:
+                resp = Response(w)
+
             return resp(environ, start_response)
         except HTTPBadRequest as e:
             resp = Response(str(e), status=400)
@@ -869,8 +921,18 @@ class SyncApp:
             
             result = handler.media_sanity(local_count)
 
-        # Return JSON response for media sync operations (let HTTPS proxy handle compression)
-        return json.dumps(result).encode('utf-8')
+        # Build response payload and ensure anki-original-size header is included
+        if operation == "downloadFiles":
+            # Binary zip data - don't double-compress, but still include size header
+            payload = result if isinstance(result, (bytes, bytearray)) else bytes(result)
+            return payload, len(payload)
+
+        # For JSON responses, compress with zstd to match modern Anki expectations
+        # and return (compressed, original_size)
+        json_payload = json.dumps(result).encode("utf-8")
+        orig_size = len(json_payload)
+        compressed = zstd.ZstdCompressor().compress(json_payload)
+        return compressed, orig_size
 
     def _handle_collection_sync(self, req):
         """Handle collection sync endpoints (/sync/)."""
@@ -930,12 +992,14 @@ class SyncApp:
 
             logger.info(f"Extracted credentials - identifier: '{username}', password present: {bool(password)}")
             
-            # Check if this is an empty discovery request from modern client
-            if not username and not password and not data:
-                logger.info("Empty hostKey request detected - modern client discovery request")
-                # Modern clients expect an HTTP 401 response for initial discovery
-                # This prompts them to retry with credentials
-                raise HTTPUnauthorized("Authentication required")
+            # Check if this is a discovery request from modern client
+            sync_header = req.get_sync_header()
+            if not username and not password and sync_header.get("k") == "" and not data:
+                # Discovery request - client should send credentials in body for login
+                logger.info("Discovery request detected - expecting credentials in request body")
+                logger.info("This means client needs to show login dialog and send username/password")
+                # Raise HTTP 400 to signal client to prompt for auth (Anki expects this)
+                raise HTTPBadRequest("expected auth")
             
             if not username or not password:
                 logger.warning(f"Incomplete credentials - identifier: '{username}', password present: {bool(password)}")
@@ -945,11 +1009,11 @@ class SyncApp:
             result = self.operation_hostKey(username, password)
             logger.info(f"Authentication successful for user: '{username}', returning host key")
             
-            # Return zstd-compressed JSON response
-            response_data = json.dumps(result).encode('utf-8')
-            ctx = zstd.ZstdCompressor()
-            compressed_data = ctx.compress(response_data)
-            return compressed_data
+            # Return zstd-compressed JSON response with original size header
+            payload = json.dumps(result).encode('utf-8')
+            orig_size = len(payload)
+            compressed = zstd.ZstdCompressor().compress(payload)
+            return compressed, orig_size
 
         # For other operations, need session key
         session_key = req.get_sync_key() or req.get_session_key()
@@ -1031,17 +1095,18 @@ class SyncApp:
             
             self.operation_upload(col, data, session)
             
-            # Return zstd-compressed response for modern clients
-            response_data = b"OK"
-            ctx = zstd.ZstdCompressor()
-            compressed_response = ctx.compress(response_data)
-            return compressed_response
+            # Return zstd-compressed response for modern clients with original size
+            payload = b"OK"
+            orig_size = len(payload)
+            compressed = zstd.ZstdCompressor().compress(payload)
+            return compressed, orig_size
             
         elif operation == "download":
             result = self.operation_download(col, session)
-            # Compress the response
-            ctx = zstd.ZstdCompressor()
-            return ctx.compress(result)
+            # Compress the response with original size
+            orig_size = len(result)
+            compressed = zstd.ZstdCompressor().compress(result)
+            return compressed, orig_size
         
         # Handle other sync operations with modern protocol support
         handler = session.get_handler_for_operation(operation, col)
@@ -1077,10 +1142,11 @@ class SyncApp:
             session
         )
         
-        # Return zstd-compressed JSON response
-        response_data = json.dumps(result).encode('utf-8')
-        ctx = zstd.ZstdCompressor()
-        return ctx.compress(response_data)
+        # Return zstd-compressed JSON response with original size
+        payload = json.dumps(result).encode('utf-8')
+        orig_size = len(payload)
+        compressed = zstd.ZstdCompressor().compress(payload)
+        return compressed, orig_size
 
     @staticmethod
     def _execute_handler_method_in_thread(method_name, keyword_args, session):

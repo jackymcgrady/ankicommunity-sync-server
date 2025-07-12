@@ -546,9 +546,6 @@ class ServerMediaManager:
         # Perform unicode normalization
         if hasattr(anki.utils, 'is_mac') and anki.utils.is_mac:
             filename = unicodedata.normalize("NFD", filename)
-        elif hasattr(anki.utils, 'isMac') and anki.utils.isMac:
-            # Fallback for older Anki versions
-            filename = unicodedata.normalize("NFD", filename)
         else:
             filename = unicodedata.normalize("NFC", filename)
         

@@ -15,7 +15,12 @@ class SqliteUserManager(SimpleUserManager):
         SimpleUserManager.__init__(self, collection_path)
 
         self.auth_db_path = os.path.realpath(auth_db_path)
-        self._ensure_schema_up_to_date()
+        # Ensure the database exists and schema is up to date
+        if not self.auth_db_exists():
+            # Create a fresh auth DB with required table
+            self.create_auth_db()
+        else:
+            self._ensure_schema_up_to_date()
 
     def _ensure_schema_up_to_date(self):
         if not self.auth_db_exists():
