@@ -34,7 +34,22 @@ from functools import wraps
 import anki
 import anki.db
 import anki.utils
-from anki.utils import int_time, ids2str
+# Import helper functions from Anki, handling old versions that expose
+# `intTime`/`ids2str` with different casing.
+from anki import utils as _anki_utils  # type: ignore
+
+# `int_time` was introduced in newer Anki.  Older wheels (e.g. 2.1.35) only
+# expose `intTime`.  Provide a fallback so the rest of the code can keep using
+# `int_time` transparently.
+if hasattr(_anki_utils, "int_time"):
+    int_time = _anki_utils.int_time  # pylint: disable=invalid-name
+else:  # pragma: no cover – legacy Anki <2.1.40
+    int_time = _anki_utils.intTime  # type: ignore[attr-defined]
+
+# Same story for `ids2str`, which has been stable but add a safeguard anyway.
+ids2str = getattr(_anki_utils, "ids2str", getattr(_anki_utils, "ids2Str", None))
+
+__all__ = ["int_time", "ids2str"]
 from anki.consts import REM_CARD, REM_NOTE
 from ankisyncd.full_sync import get_full_sync_manager
 from ankisyncd.sessions import get_session_manager

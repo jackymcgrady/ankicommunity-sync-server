@@ -15,12 +15,27 @@ import time
 from typing import List, Tuple
 
 from anki.db import DB, DBError
-from anki.utils import ids2str, int_time, plat_desc, checksum, dev_mode
+from anki.utils import checksum, dev_mode
 from anki.consts import *
 from anki.config import ConfigManager
 from anki.utils import version_with_build
 import anki
 from anki.lang import ngettext
+
+# Provide compatibility across Anki versions – see explanation in sync_app.py
+from anki import utils as _anki_utils  # type: ignore
+
+if hasattr(_anki_utils, "int_time"):
+    int_time = _anki_utils.int_time  # pylint: disable=invalid-name
+else:
+    int_time = _anki_utils.intTime  # type: ignore[attr-defined]
+
+ids2str = getattr(_anki_utils, "ids2str", getattr(_anki_utils, "ids2Str", None))
+
+# `plat_desc` naming likewise changed in earlier versions.
+plat_desc = getattr(_anki_utils, "plat_desc", getattr(_anki_utils, "platDesc", None))
+
+__all__ = ["int_time", "ids2str", "plat_desc"]
 
 from .schema_updater import SchemaUpdater
 
