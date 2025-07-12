@@ -81,6 +81,108 @@ The server now listens on `http://127.0.0.1:27701`—point your client there und
 
 ---
 
+## 🐳 Docker Deployment
+
+A complete Docker setup is provided for development, testing, and production deployment with full HTTPS support.
+
+### Quick Start
+
+```bash
+# Development with HTTP only
+./scripts/docker-dev.sh up
+
+# Development with HTTPS (recommended)
+./scripts/docker-dev.sh certs   # Generate SSL certificates
+./scripts/docker-dev.sh https   # Start with HTTPS proxy
+
+# Production testing
+./scripts/docker-dev.sh prod
+```
+
+**Access URLs:**
+- HTTP: `http://localhost:27701`
+- HTTPS: `https://localhost:27703`
+
+### Essential Commands
+
+```bash
+# Container Management
+./scripts/docker-dev.sh build    # Build Docker images
+./scripts/docker-dev.sh up       # Start development environment
+./scripts/docker-dev.sh https    # Start with HTTPS proxy
+./scripts/docker-dev.sh down     # Stop all containers
+./scripts/docker-dev.sh restart  # Restart containers
+./scripts/docker-dev.sh status   # Check container status
+
+# Monitoring & Debugging
+./scripts/docker-dev.sh logs     # View server logs
+docker-compose logs -f           # Real-time logs from all containers
+docker-compose logs -t --tail=50 # Recent logs with timestamps
+docker exec -it anki-sync-server-dev bash  # Shell access
+
+# SSL Certificate Management
+./scripts/setup-https-certs.sh self-signed   # Generate self-signed cert
+./scripts/setup-https-certs.sh letsencrypt   # Get Let's Encrypt cert
+./scripts/setup-https-certs.sh info          # Check certificate info
+```
+
+### Production Deployment
+
+```bash
+# Deploy to production server
+./scripts/docker-deploy.sh production latest
+
+# Check deployment status
+./scripts/docker-deploy.sh status
+
+# View production logs
+./scripts/docker-deploy.sh logs
+
+# Rollback if needed
+./scripts/docker-deploy.sh rollback
+```
+
+### Docker Architecture
+
+- **Multi-stage Dockerfile**: Optimized builds for development and production
+- **HTTPS Proxy**: Automatic SSL/TLS termination with certificate generation
+- **Health Checks**: Built-in container health monitoring
+- **Volume Persistence**: Data survives container restarts
+- **GitHub Actions**: Automated image building and publishing
+
+### Monitoring Sync Activity
+
+```bash
+# Real-time sync monitoring
+docker-compose logs -f | grep -E "(sync|meta|hostKey|msync)"
+
+# Check container resources
+docker stats
+
+# Inspect specific sync requests
+docker logs anki-sync-server-dev --tail=100
+```
+
+### Troubleshooting
+
+```bash
+# Clean restart
+docker-compose down --volumes --remove-orphans
+docker system prune -f
+./scripts/docker-dev.sh build && ./scripts/docker-dev.sh https
+
+# Check port conflicts
+lsof -i :27701 && lsof -i :27703
+
+# Container debugging
+docker inspect anki-sync-server-dev
+docker exec anki-sync-server-dev ps aux
+```
+
+For complete Docker documentation, see [`DOCKER_GUIDE.md`](DOCKER_GUIDE.md).
+
+---
+
 ## Extending & Hacking
 * Swap in your own **user manager** (`users/`) for OAuth or LDAP auth.
 * Emit **Prometheus metrics** by wrapping the ASGI app with middleware.

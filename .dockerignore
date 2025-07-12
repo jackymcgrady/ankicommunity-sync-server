@@ -1,0 +1,113 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Documentation
+README.md
+docs/
+*.md
+development_roadmap.txt
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+env
+pip-log.txt
+pip-delete-this-directory.txt
+.tox
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+.idea
+.vscode
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Development
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+env/
+ENV/
+
+# Docker
+docker-compose.override.yml
+.dockerignore
+Dockerfile*
+
+# Data and logs
+data/
+logs/
+backups/
+*.log
+*.db
+*.sqlite
+*.sqlite3
+
+# Certificates
+certs/
+*.pem
+*.key
+*.crt
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Testing
+.coverage
+htmlcov/
+.tox/
+.pytest_cache/
+.mypy_cache/
+
+# Node (if any)
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Temporary files
+*.tmp
+*.temp
+.tmp/
+.temp/
+
+# Local configuration
+.env
+.env.local
+.env.*.local
+
+# Jupyter
+.ipynb_checkpoints/
+
+# GitHub Actions
+.github/
+
+# Scripts that shouldn't be in container
+scripts/
+Makefile 
