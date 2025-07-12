@@ -1,5 +1,15 @@
 # Anki Sync Server Upgrade Project TODO
 
+## ⚠️ IMPORTANT: Python Version Update (December 2024)
+- ✅ **Python 3.9+ Required**: Updated project to require Python 3.9+ (was Python 3.8+)
+- ✅ **Reason**: Anki 25.x+ requires Python 3.9+ and no longer supports Python 3.8
+- ✅ **Files Updated**:
+  - `pyproject.toml`: Updated `python = "^3.9"`
+  - `requirements.txt`: Updated all Python version constraints to `>= "3.9"`
+  - `src/requirements.txt`: Updated Anki version from 2.1.49 to >=24.4 and Python constraints
+  - `.github/workflows/test.yml`: Updated test matrix to use Python 3.9, 3.10, 3.11, 3.12 (removed 3.8)
+- ✅ **Impact**: GitHub Actions will now pass, Docker builds will work with modern Anki versions
+
 ## Phase 1: Audit & Gap Analysis
 - [x] Review Current Features - Core sync for decks, cards, notes, models, and tags appears to be implemented (see `src/ankisyncd/sync.py` and `src/ankisyncd/sync_app.py`).
   - [x] Catalog supported sync features (decks, cards, notes) - Supported: Decks (including deck options/config), Cards, Notes, Models (Note Types), Tags, Revlog, Graves (Deletions), Collection Config.
