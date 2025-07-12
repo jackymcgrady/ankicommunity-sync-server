@@ -15,7 +15,7 @@ import time
 from typing import List, Tuple
 
 from anki.db import DB, DBError
-from anki.utils import checksum, dev_mode
+from anki.utils import checksum
 from anki.consts import *
 from anki.config import ConfigManager
 from anki.utils import version_with_build
@@ -35,7 +35,10 @@ ids2str = getattr(_anki_utils, "ids2str", getattr(_anki_utils, "ids2Str", None))
 # `plat_desc` naming likewise changed in earlier versions.
 plat_desc = getattr(_anki_utils, "plat_desc", getattr(_anki_utils, "platDesc", None))
 
-__all__ = ["int_time", "ids2str", "plat_desc"]
+# `dev_mode` doesn't exist in older Anki versions, provide a default
+dev_mode = getattr(_anki_utils, "dev_mode", "")
+
+__all__ = ["int_time", "ids2str", "plat_desc", "dev_mode"]
 
 from .schema_updater import SchemaUpdater
 
