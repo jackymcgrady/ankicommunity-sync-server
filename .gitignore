@@ -240,6 +240,9 @@ $RECYCLE.BIN/
 /config/*
 !/config/.env.example
 
+# XRay configuration (contains sensitive server info)
+xray-config.json
+
 # Python
 __pycache__/
 *.py[cod]
