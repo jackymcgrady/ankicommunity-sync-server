@@ -13,6 +13,7 @@
 - ⚠️ **Test Suite Status**: Many tests currently fail due to missing `SyncMediaHandler` and schema compatibility issues
   - GitHub Actions now runs basic import tests to verify package integrity
   - Full test suite restoration is needed but not blocking deployment
+- ✅ **Docker Security Scan Fix**: Fixed Trivy security scanner to use correct image digest reference
 - ✅ **Impact**: GitHub Actions will now pass, Docker builds will work with modern Anki versions
 
 ## Phase 1: Audit & Gap Analysis

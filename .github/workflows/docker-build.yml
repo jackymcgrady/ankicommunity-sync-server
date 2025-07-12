@@ -17,6 +17,9 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      image-digest: ${{ steps.build.outputs.digest }}
+      image-tags: ${{ steps.meta.outputs.tags }}
 
     steps:
     - name: Checkout repository
@@ -48,6 +51,7 @@ jobs:
           type=raw,value=latest,enable={{is_default_branch}}
 
     - name: Build and push Docker image
+      id: build
       uses: docker/build-push-action@v5
       with:
         context: .
@@ -59,6 +63,11 @@ jobs:
         cache-from: type=gha
         cache-to: type=gha,mode=max
         platforms: linux/amd64,linux/arm64
+
+    - name: Output image tags for debugging
+      run: |
+        echo "Built tags: ${{ steps.meta.outputs.tags }}"
+        echo "Image digest: ${{ steps.build.outputs.digest }}"
 
     - name: Build and push HTTPS proxy image
       uses: docker/build-push-action@v5
@@ -80,7 +89,7 @@ jobs:
     - name: Run Trivy vulnerability scanner
       uses: aquasecurity/trivy-action@master
       with:
-        image-ref: '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}'
+        image-ref: '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build.outputs.image-digest }}'
         format: 'sarif'
         output: 'trivy-results.sarif'
 
