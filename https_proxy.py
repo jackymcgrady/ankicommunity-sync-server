@@ -88,7 +88,7 @@ class HTTPSProxyHandler(BaseHTTPRequestHandler):
                 return
             
             # Build target URL
-            target_url = f"http://127.0.0.1:27702{self.path}"
+            target_url = f"http://127.0.0.1:27701{self.path}"
             
             # WORKAROUND: Fix client's malformed compressed data
             if ((len(request_body) == 35 and 

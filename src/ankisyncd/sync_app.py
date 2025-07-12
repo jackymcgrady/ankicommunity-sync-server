@@ -905,12 +905,29 @@ class SyncApp:
             logger.info(f"Request body data: {data}")
             logger.info(f"Sync header: {sync_header}")
             
-            # Handle both modern (email/username) and legacy (u/p) field names
+            # Extract username/password from JSON data first
             username = (data.get('username') or 
                        data.get('u') or 
-                       data.get('email'))  # Modern client might send email field
+                       data.get('email'))
             password = data.get('password') or data.get('p')
-            
+
+            # If JSON did not provide credentials, try HTTP Basic Auth header
+            if (not username or not password):
+                auth_header = req.environ.get('HTTP_AUTHORIZATION', '')
+                if auth_header.startswith('Basic '):
+                    import base64
+                    try:
+                        decoded = base64.b64decode(auth_header[6:]).decode('utf-8')
+                        if ':' in decoded:
+                            username_hdr, password_hdr = decoded.split(':', 1)
+                            # Only overwrite if values are missing
+                            if not username:
+                                username = username_hdr
+                            if not password:
+                                password = password_hdr
+                    except Exception as e:
+                        logger.warning(f"Failed to parse Basic Auth header: {e}")
+
             logger.info(f"Extracted credentials - identifier: '{username}', password present: {bool(password)}")
             
             # Check if this is an empty discovery request from modern client

@@ -1,0 +1,410 @@
+{
+ "log": {
+    "loglevel": "warning",
+    "access": "/var/log/xray/access.log",
+    "error": "/var/log/xray/error.log"
+  },
+  "dns": {
+    "servers": [
+      "https+local://1.1.1.1/dns-query",
+      "localhost"
+    ]
+  },
+  "routing": {
+    "domainStrategy": "IPIfNonMatch",
+    "rules": [
+      {
+        "type": "field",
+        "outboundTag": "chang",
+        "domain": [
+          "www.americanexpress.com",
+          "chat.openai.com",
+	  "chatgpt.com",
+          "ip.me"
+        ]
+      },
+      {
+        "ip": [
+          "geoip:cn",
+          "geoip:private"
+        ],
+        "outboundTag": "blocked",
+        "type": "field"
+      },
+      {
+        "type": "field",
+	"user": ["jack"],
+        "outboundTag": "direct"
+      },
+      {
+        "type": "field",
+        "user": ["chang"],
+        "outboundTag": "chang"
+      },
+      {
+        "type": "field",
+        "user": ["shen"],
+        "outboundTag": "shen"
+      },
+      {
+        "type": "field",
+        "user": ["tt1"],
+        "outboundTag": "tt1"
+      },
+      {
+        "type": "field",
+        "user": ["tt2"],
+        "outboundTag": "tt2"
+      },
+      {
+        "type": "field",
+        "user": ["tt3"],
+        "outboundTag": "tt3"
+      },
+      {
+        "type": "field",
+        "user": ["tt4"],
+        "outboundTag": "tt4"
+      },
+      {
+        "type": "field",
+        "user": ["tt5"],
+        "outboundTag": "tt5"
+      },
+      {
+        "type": "field",
+        "user": ["tt6"],
+        "outboundTag": "tt6"
+      },
+      {
+        "type": "field",
+        "user": ["tt7"],
+        "outboundTag": "tt7"
+      },
+      {
+        "type": "field",
+        "user": ["tt8"],
+        "outboundTag": "tt8"
+      },
+      {
+        "type": "field",
+        "user": ["tt9"],
+        "outboundTag": "tt9"
+      },
+      {
+        "type": "field",
+        "user": ["tt10"],
+        "outboundTag": "tt10"
+      }
+    ]
+  },
+  "inbounds": [
+    {
+      "protocol": "shadowsocks",
+      "port": 37067,
+      "settings": {
+        "method": "aes-256-gcm",
+        "password": "blocknomore",
+        "network": "tcp,udp"
+      }
+    },
+    {
+      "port": 443,
+      "listen": "0.0.0.0",
+      "protocol": "trojan",
+      "tag": "trojan_inbound",
+      "settings": {
+        "clients": [
+          {
+            "password": "blocknomore",
+            "email": "jack"
+          },
+	  {
+            "password": "chang-wallnomore",
+            "email": "chang"
+          },
+	  {
+            "password": "shen-wallnomore",
+            "email": "shen"
+          },
+	  {
+            "password": "tt1-secure-password",
+            "email": "tt1"
+          },
+          {
+            "password": "tt2-secure-password",
+            "email": "tt2"
+          },
+	  {
+            "password": "tt3-secure-password",
+            "email": "tt3"
+          },
+	  {
+            "password": "tt4-secure-password",
+            "email": "tt4"
+          },
+	  {
+            "password": "tt5-secure-password",
+            "email": "tt5"
+          },
+	  {
+            "password": "tt6-secure-password",
+            "email": "tt6"
+          },
+          {
+            "password": "tt7-secure-password",
+            "email": "tt7"
+          },
+          {
+            "password": "tt8-secure-password",
+            "email": "tt8"
+          },
+          {
+            "password": "tt9-secure-password",
+            "email": "tt9"
+          },
+          {
+            "password": "tt10-secure-password",
+            "email": "tt10"
+          }
+        ],
+        "fallbacks": [
+          {
+            "dest": 8080,
+	    "xver": 1
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "tls",
+        "tlsSettings": {
+          "rejectUnknownSni": false,
+	  "alpn": "http/1.1",
+          "certificates": [
+            {
+              "certificateFile": "/usr/local/etc/xray/cert/fullchain.crt",
+              "keyFile": "/usr/local/etc/xray/cert/cert.key"
+            }
+          ]
+        }
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": [
+          "http",
+          "tls"
+        ]
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "direct",
+      "protocol": "freedom",
+      "settings": {}
+    },
+    {
+      "tag": "warp",
+      "protocol": "socks",
+      "settings": {
+        "servers": [
+          {
+            "address": "127.0.0.1",
+            "port": 40000
+          }
+        ]
+      }
+    },
+    {
+      "tag": "cmu",
+      "protocol": "shadowsocks",
+      "settings": {
+        "servers": [
+          {
+            "address": "128.237.74.10",
+            "port": 8080,
+            "method": "aes-256-gcm",
+            "password": "4openai",
+            "level": 0
+          }
+        ]
+      }
+    },
+    {
+      "tag": "shen",
+      "protocol": "shadowsocks",
+      "settings": {
+        "servers": [
+          {
+            "address": "107.131.123.241",
+            "port": 8388,
+            "method": "chacha20-ietf-poly1305",
+            "password": "wallnomore",
+            "level": 0
+          }
+        ]
+      }
+    },
+    {
+      "tag": "chang",
+      "protocol": "shadowsocks",
+      "settings": {
+        "servers": [
+          {
+            "address": "172.16.0.164",
+            "port": 8388,
+            "method": "chacha20-ietf-poly1305",
+            "password": "fIJn4EGN02MV",
+            "level": 0
+          }
+        ]
+      }
+    },
+    {
+      "tag": "tt1",
+      "protocol": "shadowsocks",
+      "settings": {
+        "servers": [
+          {
+            "address": "54.153.110.173",
+            "port": 443,
+            "method": "chacha20-ietf-poly1305",
+            "password": "tiktok-secure-password"
+          }
+        ]
+      }
+    },
+    {
+      "tag": "tt2",
+      "protocol": "shadowsocks",
+      "settings": {
+        "servers": [
+          {
+            "address": "52.53.254.153",
+            "port": 443,
+            "method": "chacha20-ietf-poly1305",
+            "password": "tiktok-secure-password"
+          }
+        ]
+      }
+    },
+    {
+      "tag": "tt3",
+      "protocol": "shadowsocks",
+      "settings": {
+        "servers": [
+          {
+            "address": "54.215.131.14",
+            "port": 443,
+            "method": "chacha20-ietf-poly1305",
+            "password": "tiktok-secure-password"
+          }
+        ]
+      }
+    },
+    {
+      "tag": "tt4",
+      "protocol": "shadowsocks",
+      "settings": {
+        "servers": [
+          {
+            "address": "13.57.37.225",
+            "port": 443,
+            "method": "chacha20-ietf-poly1305",
+            "password": "tiktok-secure-password"
+          }
+        ]
+      }
+    },
+    {
+      "tag": "tt5",
+      "protocol": "shadowsocks",
+      "settings": {
+        "servers": [
+          {
+            "address": "3.101.152.136",
+            "port": 443,
+            "method": "chacha20-ietf-poly1305",
+            "password": "tiktok-secure-password"
+          }
+        ]
+      }
+    },
+    {
+      "tag": "tt6",
+      "protocol": "shadowsocks",
+      "settings": {
+        "servers": [
+          {
+            "address": "18.232.57.43",
+            "port": 443,
+            "method": "chacha20-ietf-poly1305",
+            "password": "tiktok-secure-password"
+          }
+        ]
+      }
+    },
+    {
+      "tag": "tt7",
+      "protocol": "shadowsocks",
+      "settings": {
+        "servers": [
+          {
+            "address": "107.21.156.197",
+            "port": 443,
+            "method": "chacha20-ietf-poly1305",
+            "password": "tiktok-secure-password"
+          }
+        ]
+      }
+    },
+    {
+      "tag": "tt8",
+      "protocol": "shadowsocks",
+      "settings": {
+        "servers": [
+          {
+            "address": "34.230.22.87",
+            "port": 443,
+            "method": "chacha20-ietf-poly1305",
+            "password": "tiktok-secure-password"
+          }
+        ]
+      }
+    },
+    {
+      "tag": "tt9",
+      "protocol": "shadowsocks",
+      "settings": {
+        "servers": [
+          {
+            "address": "54.164.125.131",
+            "port": 443,
+            "method": "chacha20-ietf-poly1305",
+            "password": "tiktok-secure-password"
+          }
+        ]
+      }
+    },
+    {
+      "tag": "tt10",
+      "protocol": "shadowsocks",
+      "settings": {
+        "servers": [
+          {
+            "address": "54.224.22.115",
+            "port": 443,
+            "method": "chacha20-ietf-poly1305",
+            "password": "tiktok-secure-password"
+          }
+        ]
+      }
+    },
+    {
+      "tag": "blocked",
+      "protocol": "blackhole",
+      "settings": {}
+    }
+  ]
+}
