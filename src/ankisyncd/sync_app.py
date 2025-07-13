@@ -340,7 +340,46 @@ class SyncCollectionHandler(Syncer):
         return dict(status="ok")
 
     def finish(self):
-        return super().finish(anki.utils.int_time(1000))
+        """Finalize sync and ensure the on-disk collection is fully consolidated.
+
+        A standard Anki client calls the *finish* operation as the final step of a
+        sync session.  At this point the server-side collection might still have
+        pending transactions in its WAL file.  If we immediately serve the
+        collection back to another client (e.g. at the start of the next sync
+        session or when downloading the entire collection), the main
+        `collection.anki2` file could be only a few KiB in size and miss most of
+        the recent changes – they would live exclusively in the WAL file.  Some
+        clients refuse to open such a database and will prompt for a full
+        upload, breaking the seamless sync experience.
+
+        To avoid this we force an explicit WAL checkpoint **and** invoke
+        `Collection.consolidate()` (available in modern Anki) or fall back to a
+        `VACUUM` if the consolidated API is not present.  This merges WAL
+        changes back into the main database file, truncates the WAL, and
+        guarantees the collection can be opened on its own.
+        """
+
+        # Run the default finish logic (updates mod/ls/usn & saves).
+        now = super().finish(anki.utils.int_time(1000))
+
+        # Attempt to consolidate the collection so that all WAL changes are
+        # flushed into the main DB file.
+        try:
+            if hasattr(self.col, "consolidate") and callable(self.col.consolidate):
+                # Modern Anki provides this helper which runs VACUUM + ANALYZE
+                # and rewrites the DB without requiring extra pragmas.
+                self.col.consolidate()
+            else:
+                # Fallback: manual WAL checkpoint + VACUUM.
+                self.col.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                self.col.db.execute("VACUUM")
+            # Ensure writes are committed.
+            self.col.db.commit()
+        except Exception as e:
+            # Consolidation failures should not abort the sync – just log.
+            logger.warning(f"Collection consolidation failed: {e}")
+
+        return now
 
     # This function had to be put here in its entirety because Syncer.removed()
     # doesn't use self.usnLim() (which we override in this class) in queries.
@@ -457,7 +496,7 @@ class SyncRequest:
         """Get and decompress the request body without blocking when CONTENT_LENGTH is absent."""
         if self._data is not None:
             return self._data
-
+            
         content_length_str = self.environ.get("CONTENT_LENGTH")
         logger.info(f"Raw CONTENT_LENGTH header: '{content_length_str}'")
         if not content_length_str:  # Handles None or empty string
@@ -504,7 +543,7 @@ class SyncRequest:
             raw_data = b""
         else:
             raw_data = self.environ["wsgi.input"].read(content_length)
-
+        
         if not raw_data:
             logger.info("Request body is empty – treating as empty JSON.")
             self._data = b"{}"
@@ -642,8 +681,17 @@ class chunked(object):
                 body, orig = w
                 resp = Response(body, content_type='application/octet-stream')
                 resp.headers['anki-original-size'] = str(orig)
+                resp.headers['Content-Length'] = str(len(body)) # Explicitly set Content-Length
+                logger.info(f"Setting anki-original-size header: {orig} bytes for path {environ.get('PATH_INFO')}")
             else:
-                resp = Response(w)
+                # w could be raw bytes or a Response object
+                if isinstance(w, (bytes, bytearray)):
+                    resp = Response(w, content_type='application/octet-stream')
+                    resp.headers['anki-original-size'] = str(len(w))
+                    resp.headers['Content-Length'] = str(len(w)) # Explicitly set Content-Length
+                    logger.info(f"Auto-added anki-original-size header: {len(w)} bytes for path {environ.get('PATH_INFO')}")
+                else:
+                    resp = Response(w)
 
             return resp(environ, start_response)
         except HTTPBadRequest as e:
@@ -903,8 +951,8 @@ class SyncApp:
                 logger.error(f"Error processing downloadFiles request: {e}")
                 result = handler.download_files([])
             
-            # This returns raw zip data, not JSON
-            return result
+            # Return raw zip data with original size for chunked decorator
+            return (result, len(result))
             
         elif operation == "mediaSanity":
             try:
@@ -972,7 +1020,7 @@ class SyncApp:
                        data.get('u') or 
                        data.get('email'))
             password = data.get('password') or data.get('p')
-
+            
             # If JSON did not provide credentials, try HTTP Basic Auth header
             if (not username or not password):
                 auth_header = req.environ.get('HTTP_AUTHORIZATION', '')
@@ -1030,62 +1078,22 @@ class SyncApp:
         
         # Handle upload/download operations (these might use different data format)
         if operation == "upload":
-            # For upload, get raw binary data directly from request body
-            content_length_str = req.environ.get("CONTENT_LENGTH")
-            if not content_length_str:
-                content_length = 0
-            else:
-                try:
-                    content_length = int(content_length_str)
-                except ValueError:
-                    content_length = 0
+            # Collection uploads are often sent with chunked transfer encoding.
+            # Rely on SyncRequest.get_body_data() which already handles both
+            # Content-Length and manual chunk decoding + zstd decompression.
+            raw_payload = req.get_body_data()
+            logger.info(f"Upload received raw payload of {len(raw_payload)} bytes (post-dechunk/decompress)")
 
-            if content_length > 0:
-                # Read raw binary data directly from wsgi input
-                raw_data = req.environ["wsgi.input"].read(content_length)
-                logger.info(f"Upload received {len(raw_data)} bytes of raw data")
-                logger.info(f"Upload raw data preview: {raw_data[:50]}...")
-                
-                # Try to decompress the raw data
+            # The body sent by modern Anki clients is a zstd-compressed SQLite
+            # file.  If get_body_data() could not decompress (e.g. legacy
+            # gzip or no compression), attempt fallback decompression below.
+            data = raw_payload
+            if not data.startswith(b'SQLite format 3'):
                 try:
-                    # Try zstd decompression first (modern Anki)
-                    dctx = zstd.ZstdDecompressor()
-                    decompressed_data = dctx.decompress(raw_data)
-                    logger.info(f"Successfully zstd-decompressed upload data: {len(decompressed_data)} bytes")
-                    data = decompressed_data
-                except zstd.ZstdError as e:
-                    logger.warning(f"Zstd decompression failed: {e}")
-                    # If zstd fails, try gzip (legacy format)
-                    try:
-                        data = gzip.decompress(raw_data)
-                        logger.info(f"Successfully gzip-decompressed upload data: {len(data)} bytes")
-                    except Exception as e2:
-                        logger.warning(f"Gzip decompression also failed: {e2}")
-                        # Try different zstd approaches
-                        try:
-                            # Try with explicit max window size
-                            dctx = zstd.ZstdDecompressor(max_window_size=2**31)
-                            decompressed_data = dctx.decompress(raw_data)
-                            logger.info(f"Successfully zstd-decompressed with max window: {len(decompressed_data)} bytes")
-                            data = decompressed_data
-                        except Exception as e3:
-                            logger.warning(f"Zstd with max window failed: {e3}")
-                            # Try streaming decompression
-                            try:
-                                dctx = zstd.ZstdDecompressor()
-                                with dctx.stream_reader(io.BytesIO(raw_data)) as reader:
-                                    decompressed_data = reader.read()
-                                logger.info(f"Successfully zstd stream-decompressed: {len(decompressed_data)} bytes") 
-                                data = decompressed_data
-                            except Exception as e4:
-                                logger.error(f"All decompression methods failed. Raw data: {raw_data[:100]}")
-                                logger.error(f"zstd error: {e}, gzip error: {e2}, zstd max window: {e3}, zstd stream: {e4}")
-                                # If all else fails, assume it's already uncompressed
-                                logger.warning("Using raw data as-is (may be corrupted)")
-                                data = raw_data
-            else:
-                logger.warning("Upload request has no content")
-                data = b""
+                    data = gzip.decompress(raw_payload)
+                    logger.info(f"Upload gzip-decompressed to {len(data)} bytes")
+                except Exception:
+                    pass  # leave as-is; may already be uncompressed
             
             # Verify it looks like a SQLite database
             if data.startswith(b'SQLite format 3'):
@@ -1175,7 +1183,18 @@ class SyncApp:
             try:
                 handler_method = getattr(handler, method_name)
                 res = handler_method(**keyword_args)
-                col.save()
+                # col.save() is deprecated - saving is automatic in modern Anki
+                
+                # Force WAL checkpoint to commit changes to main database file
+                try:
+                    if hasattr(col, '_db') and col._db:
+                        col._db.execute("PRAGMA wal_checkpoint(FULL)")
+                        col._db.commit()
+                except Exception as e:
+                    # Log but don't fail if checkpoint fails
+                    import logging
+                    logging.warning(f"WAL checkpoint failed: {e}")
+                
                 return res
             finally:
                 # Restore the original collection reference

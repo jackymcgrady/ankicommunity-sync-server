@@ -19,6 +19,7 @@ class CollectionWrapper:
         self.path = os.path.realpath(path)
         self.username = os.path.basename(os.path.dirname(self.path))
         self.setup_new_collection = setup_new_collection
+        self.db = None
         self.__col = None
 
     def __del__(self):
@@ -39,6 +40,9 @@ class CollectionWrapper:
         self.open()
         args = [self.__col] + args
         ret = func(*args, **kw)
+
+        # Re-assign the db object, in case it was re-opened
+        self.db = self.__col.db
 
         # Only return the value if they requested it, so the interface remains
         # identical between this class and ThreadingCollectionWrapper
@@ -83,7 +87,19 @@ class CollectionWrapper:
         if not self.opened():
             return
 
+        # Force WAL checkpoint to commit changes to main database file
+        # This ensures the collection.anki2 file contains all changes
+        try:
+            if hasattr(self.__col, '_db') and self.__col._db:
+                self.__col._db.execute("PRAGMA wal_checkpoint(FULL)")
+                self.__col._db.commit()
+        except Exception as e:
+            # Log but don't fail if checkpoint fails
+            import logging
+            logging.warning(f"WAL checkpoint failed: {e}")
+
         self.__col.close()
+        self.db = None
         self.__col = None
 
     def opened(self):

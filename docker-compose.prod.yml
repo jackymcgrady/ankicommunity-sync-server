@@ -1,138 +1,78 @@
-
+version: '3.8'
 
 services:
   anki-sync-server:
-    image: ${ANKI_IMAGE:-ghcr.io/jackymcgrady/ankicommunity-sync-server:latest}
+    build: .
     container_name: anki-sync-server-prod
-    # Don't expose HTTP port directly - only through HTTPS proxy
-    expose:
-      - "27702"
     volumes:
-      - ./data:/data
-      - ./config:/app/config
-      - ./logs:/app/logs
+      # Collections storage - mount to persistent volume in production
+      - ./data/collections:/app/collections
+      # Configuration
+      - ./src/ankisyncd.conf:/app/ankisyncd.conf:ro
     environment:
-      - ANKISYNCD_CONFIG_PATH=/app/ankisyncd.conf
-      - PYTHONUNBUFFERED=1
-      - TZ=UTC
+      - ANKISYNCD_DATA_ROOT=/app/collections
+      - ANKISYNCD_AUTH_DB_PATH=/app/collections/auth.db
+    ports:
+      - "27702:27702"
     restart: unless-stopped
-    networks:
-      - anki-network
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
     healthcheck:
-      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:27702/status')"]
+      test: ["CMD", "curl", "-f", "http://localhost:27702/sync/hostKey"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 40s
 
-  # HTTPS proxy is the main entry point for production
   anki-https-proxy:
-    image: ${ANKI_PROXY_IMAGE:-ghcr.io/jackymcgrady/ankicommunity-sync-server-proxy:latest}
+    build:
+      context: .
+      dockerfile: Dockerfile.proxy
     container_name: anki-https-proxy-prod
-    ports:
-      - "443:27703"     # Standard HTTPS port
-      - "27703:27703"   # Alternative HTTPS port
     volumes:
-      - ./certs:/app/certs
-      - ./logs:/app/logs
+      # Certificate storage - mount Let's Encrypt certificates
+      - ./certs:/app/certs:ro
+      # Let's Encrypt challenge directory
+      - ./certbot/www:/var/www/certbot:ro
     environment:
-      - ANKI_SERVER_HOST=anki-sync-server
-      - ANKI_SERVER_PORT=27702
-      - HTTPS_PORT=27703
-      - TZ=UTC
-      - SSL_CERT_FILE=/app/certs/server.crt
-      - SSL_KEY_FILE=/app/certs/server.key
-    depends_on:
-      anki-sync-server:
-        condition: service_healthy
-    restart: unless-stopped
-    networks:
-      - anki-network
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-    healthcheck:
-      test: ["CMD", "python", "-c", "import ssl, socket; ssl.create_default_context().wrap_socket(socket.socket()).connect(('localhost', 27703))"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
-
-  # Optional: Add a reverse proxy for SSL termination
-  nginx:
-    image: nginx:alpine
-    container_name: anki-nginx-prod
+      - ANKI_SYNC_SERVER_HOST=anki-sync-server
+      - ANKI_SYNC_SERVER_PORT=27702
+      - HTTPS_CERT_PATH=/app/certs
+      - DOMAIN_NAME=${DOMAIN_NAME:-sync.ankipi.com}
     ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./nginx/ssl:/etc/nginx/ssl:ro
-      - ./logs/nginx:/var/log/nginx
+      - "27703:27703"
+      - "80:80"  # For Let's Encrypt HTTP-01 challenge
     depends_on:
       - anki-sync-server
-      - anki-https-proxy
     restart: unless-stopped
-    networks:
-      - anki-network
-    profiles:
-      - nginx
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
+    healthcheck:
+      test: ["CMD", "curl", "-k", "-f", "https://localhost:27703/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
-  # Optional: Add monitoring
-  prometheus:
-    image: prom/prometheus:latest
-    container_name: anki-prometheus
-    ports:
-      - "9090:9090"
+  # Certbot for automatic SSL certificate management
+  certbot:
+    image: certbot/certbot
+    container_name: anki-certbot-prod
     volumes:
-      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus_data:/prometheus
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--web.console.libraries=/etc/prometheus/console_libraries'
-      - '--web.console.templates=/etc/prometheus/consoles'
-    restart: unless-stopped
-    networks:
-      - anki-network
-    profiles:
-      - monitoring
-
-  grafana:
-    image: grafana/grafana:latest
-    container_name: anki-grafana
-    ports:
-      - "3000:3000"
-    volumes:
-      - grafana_data:/var/lib/grafana
-      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./certbot/conf:/etc/letsencrypt
+      - ./certbot/www:/var/www/certbot
+      - ./certs:/app/certs
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
-      - GF_USERS_ALLOW_SIGN_UP=false
-    restart: unless-stopped
-    networks:
-      - anki-network
-    profiles:
-      - monitoring
-
-networks:
-  anki-network:
-    driver: bridge
+      - DOMAIN_NAME=${DOMAIN_NAME:-sync.ankipi.com}
+    command: >
+      sh -c "
+        if [ ! -f /etc/letsencrypt/live/${DOMAIN_NAME}/fullchain.pem ]; then
+          certbot certonly --webroot --webroot-path=/var/www/certbot 
+          --email ${EMAIL:-admin@ankipi.com} --agree-tos --no-eff-email 
+          -d ${DOMAIN_NAME}
+        fi &&
+        cp /etc/letsencrypt/live/${DOMAIN_NAME}/fullchain.pem /app/certs/${DOMAIN_NAME}.crt &&
+        cp /etc/letsencrypt/live/${DOMAIN_NAME}/privkey.pem /app/certs/${DOMAIN_NAME}.key &&
+        echo 'Certificates copied successfully'
+      "
+    restart: "no"
 
 volumes:
-  prometheus_data:
+  collections_data:
     driver: local
-  grafana_data:
+  certs_data:
     driver: local 

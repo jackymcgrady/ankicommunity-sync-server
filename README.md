@@ -3,6 +3,35 @@
 A modern, open-source implementation of Anki's v2.1.57+ sync protocol.  
 If you manage multiple Anki clients (desktop, mobile, web) and need a **self-hosted** alternative to AnkiWeb, this server keeps every device in lock-step—collections, media, and change history included.
 
+## 🚀 Quick Start
+
+### Local Development
+```bash
+# Clone and start with Docker
+git clone https://github.com/jackymcgrady/ankicommunity-sync-server.git
+cd ankicommunity-sync-server
+./scripts/docker-dev.sh https
+
+# Create a user
+python3 add_email_user.py
+
+# Connect Anki to: https://localhost:27703
+```
+
+### Production Deployment (AWS Lightsail)
+```bash
+# 1. Set up your domain DNS to point to your server
+# 2. Configure environment
+cp env.production.example .env
+# Edit .env with your domain and email
+
+# 3. Deploy with automatic SSL
+./scripts/aws-deploy.sh
+
+# 4. Create users and start syncing
+python3 add_email_user.py
+```
+
 ---
 
 ## The User Story
@@ -278,6 +307,48 @@ docker-compose down && docker-compose up -d
 | `Authentication failed for nonexistent user` | User not in database | Create user with proper collection path |
 | `30-second timeout` | Blocking read on chunked requests | Implement non-blocking chunked parsing |
 | `no such table: auth` | Database not initialized | Auto-create database schema on startup |
+| `error sending request for url ()` | Self-signed certificate rejected by client | Use proper SSL certificate or add to system trust store |
+
+## 🔧 Deployment Configuration
+
+### Environment Variables
+
+The server supports the following environment variables for production deployment:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DOMAIN_NAME` | `localhost` | Your domain name for SSL certificates |
+| `EMAIL` | - | Email for Let's Encrypt certificate registration |
+| `ANKI_SYNC_SERVER_HOST` | `anki-sync-server` | Internal hostname of sync server |
+| `ANKI_SYNC_SERVER_PORT` | `27702` | Internal port of sync server |
+| `HTTPS_CERT_PATH` | `/app/certs` | Path to SSL certificates |
+| `ANKISYNCD_DATA_ROOT` | `/app/collections` | Path to collections storage |
+| `ANKISYNCD_AUTH_DB_PATH` | `/app/collections/auth.db` | Path to user database |
+
+### Volume Mounts
+
+**Critical**: Collections are stored in `/app/collections/users/` inside the container.
+
+```yaml
+volumes:
+  # Correct collection mount
+  - ./data/collections:/app/collections
+  
+  # Certificate storage
+  - ./certs:/app/certs:ro
+  
+  # Let's Encrypt challenge
+  - ./certbot/www:/var/www/certbot:ro
+```
+
+### SSL Certificate Handling
+
+The HTTPS proxy automatically detects and uses certificates in this priority order:
+
+1. **Let's Encrypt**: `{cert_path}/{domain_name}.crt` and `{domain_name}.key`
+2. **Self-signed**: `{cert_path}/localhost+3.pem` and `localhost+3-key.pem`
+
+For production, use the AWS deployment script which handles Let's Encrypt automatically.
 
 ### Production Monitoring
 

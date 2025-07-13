@@ -9,6 +9,7 @@ import threading
 import json
 import zstandard as zstd
 from http.server import BaseHTTPRequestHandler
+import os
 
 class HTTPSProxyHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
@@ -87,8 +88,12 @@ class HTTPSProxyHandler(BaseHTTPRequestHandler):
                 })
                 return
             
+            # Get target host and port from environment variables
+            anki_host = os.environ.get('ANKI_SERVER_HOST', 'anki-sync-server')
+            anki_port = os.environ.get('ANKI_SERVER_PORT', '27702')
+            
             # Build target URL
-            target_url = f"http://127.0.0.1:27701{self.path}"
+            target_url = f"http://{self.anki_host}:{self.anki_port}{self.path}"
             
             # WORKAROUND: Fix client's malformed compressed data
             if ((len(request_body) == 35 and 
@@ -215,8 +220,20 @@ def run_https_proxy():
     """Run the HTTPS proxy server"""
     port = 27703  # HTTPS port
     
+    # Get configuration from environment variables
+    anki_host = os.environ.get('ANKI_SYNC_SERVER_HOST', 'anki-sync-server')
+    anki_port = os.environ.get('ANKI_SYNC_SERVER_PORT', '27702')
+    cert_path = os.environ.get('HTTPS_CERT_PATH', '/app/certs')
+    domain_name = os.environ.get('DOMAIN_NAME', 'localhost')
+    
+    # Set global variables for the handler
+    HTTPSProxyHandler.anki_host = anki_host
+    HTTPSProxyHandler.anki_port = anki_port
+    
     print(f"Starting HTTPS proxy on port {port}...")
-    print(f"Forwarding requests to HTTP ankisyncd on port 27702")
+    print(f"Forwarding requests to HTTP ankisyncd at {anki_host}:{anki_port}")
+    print(f"Using certificates from: {cert_path}")
+    print(f"Domain: {domain_name}")
     
     with socketserver.TCPServer(("", port), HTTPSProxyHandler) as httpd:
         # Create SSL context with modern settings
@@ -228,7 +245,29 @@ def run_https_proxy():
         context.options |= ssl.OP_CIPHER_SERVER_PREFERENCE
         context.options |= ssl.OP_SINGLE_DH_USE | ssl.OP_SINGLE_ECDH_USE
         context.options |= ssl.OP_NO_COMPRESSION
-        context.load_cert_chain('./localhost+3.pem', './localhost+3-key.pem')
+        
+        # Try different certificate file patterns
+        cert_file = None
+        key_file = None
+        
+        # Try Let's Encrypt format first
+        le_cert = f"{cert_path}/{domain_name}.crt"
+        le_key = f"{cert_path}/{domain_name}.key"
+        
+        # Try mkcert format as fallback
+        mkcert_cert = f"{cert_path}/localhost+3.pem"
+        mkcert_key = f"{cert_path}/localhost+3-key.pem"
+        
+        if os.path.exists(le_cert) and os.path.exists(le_key):
+            cert_file, key_file = le_cert, le_key
+            print(f"Using Let's Encrypt certificates: {cert_file}")
+        elif os.path.exists(mkcert_cert) and os.path.exists(mkcert_key):
+            cert_file, key_file = mkcert_cert, mkcert_key
+            print(f"Using mkcert certificates: {cert_file}")
+        else:
+            raise FileNotFoundError(f"No SSL certificates found in {cert_path}. Expected {le_cert} or {mkcert_cert}")
+        
+        context.load_cert_chain(cert_file, key_file)
         
         # Wrap the socket with SSL
         httpd.socket = context.wrap_socket(httpd.socket, server_side=True)

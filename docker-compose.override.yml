@@ -1,0 +1,6 @@
+version: '3.8'
+services:
+  anki-sync-server:
+    volumes:
+      - /Users/huyuping/Dropbox/Creative/Anki-Sync-Server/collections:/app/collections
+      - ./auth.db:/app/auth.db 

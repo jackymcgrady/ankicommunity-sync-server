@@ -32,9 +32,9 @@
         "outboundTag": "blocked",
         "type": "field"
       },
-            {
+      {
         "type": "field",
-        "user": ["jack"],
+	"user": ["jack"],
         "domain": ["!sync.ankipi.com"],
         "outboundTag": "direct"
       },
@@ -175,10 +175,6 @@
           {
             "dest": 27702,
             "name": "sync.ankipi.com"
-          },
-          {
-            "dest": 8080,
-            "xver": 1
           }
         ]
       },
@@ -187,7 +183,7 @@
         "security": "tls",
         "tlsSettings": {
           "rejectUnknownSni": false,
-	  "alpn": "http/1.1",
+	  "alpn": ["h2", "http/1.1"],
           "certificates": [
             {
               "certificateFile": "/usr/local/etc/xray/cert/fullchain.crt",
@@ -197,7 +193,7 @@
         }
       },
       "sniffing": {
-        "enabled": true,
+        "enabled": false,
         "destOverride": [
           "http",
           "tls"
