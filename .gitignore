@@ -322,3 +322,29 @@ docs/_build/
 
 # Version file
 /ankisyncd/_version.py
+
+# Ignore SSL certificates and private keys
+*.pem
+*.crt
+*.key
+
+# Ignore deployment scripts and user-specific scripts
+scripts/aws-deploy.sh
+rebuild_and_restart.sh
+cleanup_user_data.sh
+
+# Ignore environment files
+.env
+.env.*
+
+# Ignore certbot and certificate output
+certbot/conf/
+certbot/www/
+certs/
+
+# Ignore local data and logs
+data/
+logs/
+
+# Do not ignore example or template files
+!env.production.example
