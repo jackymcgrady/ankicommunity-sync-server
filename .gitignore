@@ -1,3 +1,11 @@
+# Sensitive Cognito configuration files (keep template for CI)
+src/ankisyncd-cognito.conf
+
+# Development files for Cognito integration (not part of server image)
+TODO.md
+start_cognito_server.py
+test_cognito_auth.py
+
 *.pyc
 *.db
 
