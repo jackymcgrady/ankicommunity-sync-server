@@ -6,6 +6,7 @@ import inspect
 from ankisyncd import logging
 from ankisyncd.users.simple_manager import SimpleUserManager
 from ankisyncd.users.sqlite_manager import SqliteUserManager
+from ankisyncd.users.cognito_manager import CognitoUserManager
 
 logger = logging.get_logger(__name__)
 

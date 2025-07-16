@@ -19,6 +19,7 @@ psutil = "^5.7.2"
 distro = "^1.5.0"
 webob = "^1.8.6"
 protobuf = "^4.21"
+boto3 = "^1.26.0"
 
 [tool.poetry.dev-dependencies]
 mkdocs = "^1.1.2"

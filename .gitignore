@@ -348,3 +348,11 @@ logs/
 
 # Do not ignore example or template files
 !env.production.example
+!env.cognito.example
+
+# Ignore test files with credentials
+test_*.py
+*.cognito.yml
+
+# Ignore config files with real credentials
+src/ankisyncd.cognito.conf
