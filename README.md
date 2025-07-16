@@ -94,7 +94,7 @@ Settings can be supplied via **environment variables** (recommended) or a classi
 | `ANKISYNCD_HOST` | Bind address | `127.0.0.1` |
 | `ANKISYNCD_PORT` | TCP port | `27701` |
 | `ANKISYNCD_COLLECTIONS_PATH` | Where user data lives | `./collections` |
-| `ANKISYNCD_AUTH_DB_PATH` | Auth backend (when using SQLite) | `./users.db` |
+| `ANKISYNCD_AUTH_DB_PATH` | Auth backend (when using SQLite) | `./auth.db` |
 | `ANKISYNCD_LOG_LEVEL` | `DEBUG` / `INFO` | `INFO` |
 
 ---
@@ -107,6 +107,124 @@ pip install -e src
 python -m ankisyncd
 ```
 The server now listens on `http://127.0.0.1:27701`—point your client there under *Preferences → Sync*.
+
+---
+
+## 🔐 Authentication Database Management
+
+### Understanding Auth Database Location
+
+The auth database location depends on your deployment configuration:
+
+#### Development (Local)
+- **Config file**: `src/ankisyncd.conf` sets `auth_db_path = ./auth.db`
+- **Working directory**: Server runs from project root
+- **Actual location**: `./auth.db` (project root)
+- **Docker mount**: `./auth.db:/app/auth.db` (if using docker-compose.override.yml)
+
+#### Production
+- **Environment variable**: `ANKISYNCD_AUTH_DB_PATH=/app/collections/auth.db`
+- **Docker volume**: `./data/collections:/app/collections`
+- **Actual location**: `./data/collections/auth.db` (host) → `/app/collections/auth.db` (container)
+
+### Creating Users
+
+#### Method 1: Using Python Script (Recommended)
+```python
+#!/usr/bin/env python3
+import sqlite3
+import hashlib
+import binascii
+import os
+
+def create_auth_db(db_path, username, password):
+    """Create auth database with user credentials"""
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    
+    # Create auth table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS auth (
+            username VARCHAR PRIMARY KEY, 
+            hash VARCHAR
+        )
+    """)
+    
+    # Create password hash (matches server's method)
+    salt = binascii.b2a_hex(os.urandom(8))
+    pass_hash = (
+        hashlib.sha256((username + password).encode() + salt).hexdigest()
+        + salt.decode()
+    )
+    
+    # Add user
+    cursor.execute("INSERT OR REPLACE INTO auth VALUES (?, ?)", (username, pass_hash))
+    conn.commit()
+    conn.close()
+    print(f"Created auth.db with user: {username}")
+
+# Usage examples:
+# Development: create_auth_db("./auth.db", "user@example.com", "password123")
+# Production: create_auth_db("./data/collections/auth.db", "user@example.com", "password123")
+```
+
+#### Method 2: Using Docker Exec (For Running Containers)
+```bash
+# Development container
+docker exec anki-sync-server-dev python3 -c "
+from ankisyncd.users.sqlite_manager import SqliteUserManager
+mgr = SqliteUserManager('/app/auth.db', '/app/collections')
+mgr.add_user('user@example.com', 'password123')
+print('User added successfully')
+"
+
+# Production container
+docker exec anki-sync-server-prod python3 -c "
+from ankisyncd.users.sqlite_manager import SqliteUserManager
+mgr = SqliteUserManager('/app/collections/auth.db', '/app/collections')
+mgr.add_user('user@example.com', 'password123')
+print('User added successfully')
+"
+```
+
+### Verifying Authentication
+
+```bash
+# Test authentication (adjust paths for your deployment)
+docker exec anki-sync-server-prod python3 -c "
+from ankisyncd.users.sqlite_manager import SqliteUserManager
+mgr = SqliteUserManager('/app/collections/auth.db', '/app/collections')
+result = mgr.authenticate('user@example.com', 'password123')
+print('Authentication test:', 'SUCCESS' if result else 'FAILED')
+users = mgr.user_list()
+print('Users in database:', users)
+"
+```
+
+### Troubleshooting Auth Issues
+
+#### Common Problems:
+1. **"no such table: auth"** → Database doesn't exist or is empty
+2. **"Authentication failed for nonexistent user"** → User not in database
+3. **"Auth DB doesn't exist"** → Wrong path or file not created
+
+#### Debug Steps:
+```bash
+# Check if auth.db exists and location
+ls -la ./auth.db                    # Development
+ls -la ./data/collections/auth.db   # Production
+
+# Check database contents
+sqlite3 ./data/collections/auth.db "SELECT username FROM auth;"
+
+# Check container logs for auth path
+docker logs anki-sync-server-prod 2>&1 | grep "auth_db_path"
+```
+
+#### Key Learning: Environment Variables Override Config Files
+- The production `docker-compose.prod.yml` sets `ANKISYNCD_AUTH_DB_PATH=/app/collections/auth.db`
+- This overrides the `auth_db_path = ./auth.db` setting in `ankisyncd.conf`
+- Always check both config files AND environment variables to determine the actual auth database location
 
 ---
 
@@ -253,18 +371,18 @@ For complete Docker documentation, see [`DOCKER_GUIDE.md`](DOCKER_GUIDE.md).
 ### Essential Configuration
 
 ```bash
-# User Management - Create persistent auth database
-docker exec anki-sync-server python -c "
+# User Management - Create persistent auth database (Production)
+docker exec anki-sync-server-prod python -c "
 from ankisyncd.users.sqlite_manager import SqliteUserManager
-mgr = SqliteUserManager('/data/auth.db', '/data/collections')
+mgr = SqliteUserManager('/app/collections/auth.db', '/app/collections')
 mgr.add_user('your-email@example.com', 'your-password')
 print('User added successfully')
 "
 
-# Verify user authentication
-docker exec anki-sync-server python -c "
+# Verify user authentication (Production)
+docker exec anki-sync-server-prod python -c "
 from ankisyncd.users.sqlite_manager import SqliteUserManager
-mgr = SqliteUserManager('/data/auth.db', '/data/collections')
+mgr = SqliteUserManager('/app/collections/auth.db', '/app/collections')
 result = mgr.authenticate('your-email@example.com', 'your-password')
 print('Auth test:', result)
 "

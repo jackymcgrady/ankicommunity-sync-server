@@ -12,7 +12,16 @@ logger = logging.get_logger(__name__)
 
 
 def get_user_manager(config):
-    if "auth_db_path" in config and config["auth_db_path"]:
+    # Check for Cognito configuration first
+    if "cognito_user_pool_id" in config and config["cognito_user_pool_id"]:
+        logger.info("Found cognito_user_pool_id in config, using CognitoUserManager for auth")
+        cognito_config = {
+            'user_pool_id': config.get("cognito_user_pool_id"),
+            'client_id': config.get("cognito_client_id"),
+            'region': config.get("cognito_region", "ap-southeast-1")
+        }
+        return CognitoUserManager(config.get("data_root"), cognito_config)
+    elif "auth_db_path" in config and config["auth_db_path"]:
         logger.info("Found auth_db_path in config, using SqliteUserManager for auth")
         return SqliteUserManager(config["auth_db_path"], config["data_root"])
     elif "user_manager" in config and config["user_manager"]:  # load from config
@@ -34,6 +43,6 @@ def get_user_manager(config):
         return class_(config)
     else:
         logger.warning(
-            "neither auth_db_path nor user_manager set, ankisyncd will accept any password"
+            "No authentication configuration found (auth_db_path, cognito_user_pool_id, or user_manager), ankisyncd will accept any password"
         )
         return SimpleUserManager()

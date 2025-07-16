@@ -780,15 +780,39 @@ class SyncApp:
         """
         Handles the hostKey operation for user authentication.
         """
-        if self.user_manager.authenticate(username, password):
-            hkey = self.generateHostKey(username)
-            user_dir = self.user_manager.userdir(username)
-            user_path = os.path.join(self.user_manager.collection_path, user_dir)
-            session = self.create_session(username, user_path)
-            self.session_manager.save(hkey, session)
-            return {"key": hkey}
-        else:
-            raise HTTPForbidden()
+        from ankisyncd.exceptions import (
+            CognitoInvalidCredentialsException,
+            CognitoUserNotConfirmedException,
+            CognitoPasswordResetRequiredException,
+            CognitoPasswordChangeRequiredException
+        )
+        
+        try:
+            if self.user_manager.authenticate(username, password):
+                hkey = self.generateHostKey(username)
+                user_dir = self.user_manager.userdir(username)
+                user_path = os.path.join(self.user_manager.collection_path, user_dir)
+                session = self.create_session(username, user_path)
+                self.session_manager.save(hkey, session)
+                return {"key": hkey}
+            else:
+                # Traditional authentication failure (for SQLite or simple managers)
+                return {"error": "auth"}
+                
+        except CognitoInvalidCredentialsException:
+            # Map NotAuthorizedException, UserNotFoundException, InvalidParameterException, TooManyRequestsException
+            # → return {"error": "auth"} (client shows "login failed")
+            return {"error": "auth"}
+            
+        except CognitoUserNotConfirmedException:
+            # Map UserNotConfirmedException
+            # → return {"error": "account-unconfirmed"}
+            return {"error": "account-unconfirmed"}
+            
+        except (CognitoPasswordResetRequiredException, CognitoPasswordChangeRequiredException):
+            # Map PasswordResetRequiredException | PasswordChangeRequiredException
+            # → return {"error": "password-change-required"}
+            return {"error": "password-change-required"}
 
     def operation_upload(self, col, data, session):
         # Verify integrity of the received database file before replacing our
