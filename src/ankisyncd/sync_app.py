@@ -28,6 +28,7 @@ import zipfile
 import types
 import zstandard as zstd
 from webob import Response
+from .user_sync_queue import get_user_sync_queue
 from webob.exc import *
 import urllib.parse
 from functools import wraps
@@ -842,6 +843,16 @@ class SyncApp:
         # returns user data (not media) as a sqlite3 database for replacing their
         # local copy in Anki
         return open(session.get_collection_path(), "rb").read()
+    
+    def operation_queue_status(self, session):
+        """
+        Returns the current sync queue status for debugging purposes.
+        This is not part of the standard Anki sync protocol.
+        """
+        user_sync_queue = get_user_sync_queue()
+        username = session.username
+        status = user_sync_queue.get_queue_status(username)
+        return json.dumps(status)
 
     @chunked
     def __call__(self, req):
@@ -1186,50 +1197,65 @@ class SyncApp:
         Gets and runs the handler method specified by method_name inside the
         thread for session. The handler method will access the collection as
         self.col.
+        
+        This method now uses per-user sync queuing to ensure only one sync
+        operation per user can run at a time.
         """
 
-        # Get collection wrapper first
-        col_wrapper = session.collection_manager.get_collection(
-            session.get_collection_path(), 
-            session.setup_new_collection
-        )
+        def sync_operation():
+            """The actual sync operation that will be queued per-user."""
+            # Get collection wrapper first
+            col_wrapper = session.collection_manager.get_collection(
+                session.get_collection_path(), 
+                session.setup_new_collection
+            )
 
-        def run_func_with_wrapper(col):
-            """Function that runs inside the wrapper's execute method with actual collection."""
-            # Get handler with the actual collection object
-            handler = session.get_handler_for_operation(method_name, col)
-            
-            # Update the handler's collection reference to use the actual collection
-            # instead of the wrapper it was originally initialized with
-            original_col = handler.col
-            handler.col = col
-            
-            try:
-                handler_method = getattr(handler, method_name)
-                res = handler_method(**keyword_args)
-                # col.save() is deprecated - saving is automatic in modern Anki
+            def run_func_with_wrapper(col):
+                """Function that runs inside the wrapper's execute method with actual collection."""
+                # Get handler with the actual collection object
+                handler = session.get_handler_for_operation(method_name, col)
                 
-                # Force WAL checkpoint to commit changes to main database file
+                # Update the handler's collection reference to use the actual collection
+                # instead of the wrapper it was originally initialized with
+                original_col = handler.col
+                handler.col = col
+                
                 try:
-                    if hasattr(col, '_db') and col._db:
-                        col._db.execute("PRAGMA wal_checkpoint(FULL)")
-                        col._db.commit()
-                except Exception as e:
-                    # Log but don't fail if checkpoint fails
-                    import logging
-                    logging.warning(f"WAL checkpoint failed: {e}")
-                
-                return res
-            finally:
-                # Restore the original collection reference
-                handler.col = original_col
+                    handler_method = getattr(handler, method_name)
+                    res = handler_method(**keyword_args)
+                    # col.save() is deprecated - saving is automatic in modern Anki
+                    
+                    # Force WAL checkpoint to commit changes to main database file
+                    try:
+                        if hasattr(col, '_db') and col._db:
+                            col._db.execute("PRAGMA wal_checkpoint(FULL)")
+                            col._db.commit()
+                    except Exception as e:
+                        # Log but don't fail if checkpoint fails
+                        import logging
+                        logging.warning(f"WAL checkpoint failed: {e}")
+                    
+                    return res
+                finally:
+                    # Restore the original collection reference
+                    handler.col = original_col
 
-        run_func_with_wrapper.__name__ = method_name  # More useful debugging messages.
+            run_func_with_wrapper.__name__ = method_name  # More useful debugging messages.
 
-        # Use the wrapper's execute method to run with the actual collection
-        result = col_wrapper.execute(run_func_with_wrapper, waitForReturn=True)
+            # Use the wrapper's execute method to run with the actual collection
+            result = col_wrapper.execute(run_func_with_wrapper, waitForReturn=True)
+            return result
 
-        return result
+        # Use the user sync queue to ensure only one sync per user at a time
+        user_sync_queue = get_user_sync_queue()
+        username = session.username
+        
+        try:
+            result = user_sync_queue.execute_sync_operation(username, sync_operation)
+            return result
+        except Exception as e:
+            logging.error(f"Sync operation failed for user {username}: {e}")
+            raise
 
 
 class SimpleThreadExecutor:
