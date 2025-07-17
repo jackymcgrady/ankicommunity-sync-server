@@ -18,7 +18,7 @@ decorator = "^4.4.2"
 psutil = "^5.7.2"
 distro = "^1.5.0"
 webob = "^1.8.6"
-protobuf = "^4.21"
+protobuf = ">=4.21,<5"
 boto3 = "^1.26.0"
 
 [tool.poetry.dev-dependencies]
