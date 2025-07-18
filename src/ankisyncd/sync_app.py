@@ -727,6 +727,7 @@ class SyncApp:
         SyncCollectionHandler.operations
         + ["hostKey", "upload", "download"]
         + ["begin", "mediaChanges", "mediaSanity", "uploadChanges", "downloadFiles"]  # Media sync endpoints
+        + ["provision-user"]  # User provisioning endpoint
     )
 
     def __init__(self, config):
@@ -877,6 +878,11 @@ class SyncApp:
                 result = self._handle_collection_sync(req)
                 operation = req.path.split('/')[-1] if '/' in req.path else 'unknown'
                 logger.info(f"✅ COLLECTION SYNC SUCCESS: {operation} from {client_ip} in {time.time() - sync_start_time:.2f}s")
+                return result
+            elif req.path == "/provision-user":
+                # User provisioning endpoint for Cognito triggers
+                result = self._handle_user_provisioning(req)
+                logger.info(f"✅ USER PROVISIONING SUCCESS from {client_ip} in {time.time() - sync_start_time:.2f}s")
                 return result
             else:
                 logger.warning(f"❌ SYNC FAILED: Invalid endpoint {req.path} from {client_ip}")
@@ -1256,6 +1262,90 @@ class SyncApp:
         except Exception as e:
             logging.error(f"Sync operation failed for user {username}: {e}")
             raise
+
+    def _handle_user_provisioning(self, req):
+        """Handle user provisioning requests from Cognito triggers."""
+        if req.method != 'POST':
+            raise HTTPBadRequest("User provisioning requires POST method")
+        
+        # Check for API key authentication
+        api_key = req.headers.get('X-API-Key') or self.config.get('provision_api_key')
+        if not api_key:
+            raise HTTPUnauthorized("API key required for user provisioning")
+        
+        # Verify API key
+        expected_api_key = self.config.get('provision_api_key')
+        if not expected_api_key or api_key != expected_api_key:
+            raise HTTPUnauthorized("Invalid API key")
+        
+        try:
+            # Parse JSON request data
+            request_data = req.get_json_data()
+            if not request_data:
+                raise HTTPBadRequest("JSON request body required")
+            
+            username = request_data.get('username')
+            email = request_data.get('email')
+            cognito_user_id = request_data.get('cognito_user_id')
+            
+            if not username:
+                raise HTTPBadRequest("Username is required")
+            
+            # Use username as the primary identifier for folder naming
+            user_identifier = username
+            
+            logger.info(f"Provisioning user: {user_identifier} (Cognito ID: {cognito_user_id})")
+            
+            # Add user to auth database for compatibility/tracking
+            # Note: Collection directory will be created on first sync attempt
+            # Add user to SQLite auth database for compatibility (optional)
+            # This allows the system to track provisioned users even when using Cognito auth
+            auth_db_updated = False
+            try:
+                from ankisyncd.users.sqlite_manager import SqliteUserManager
+                # Check if we have a SQLite auth database configured (fallback auth)
+                auth_db_path = self.config.get('auth_db_path')
+                if auth_db_path:
+                    # Create a temporary SQLite manager to add the user
+                    sqlite_manager = SqliteUserManager(auth_db_path, self.user_manager.collection_path)
+                    
+                    # Add user with a placeholder password since Cognito handles auth
+                    placeholder_password = "cognito_user"  # Not used for actual auth
+                    if not sqlite_manager.user_exists(user_identifier):
+                        sqlite_manager.add_user(user_identifier, placeholder_password)
+                        logger.info(f"Added user '{user_identifier}' to SQLite auth database")
+                        auth_db_updated = True
+                    else:
+                        logger.info(f"User '{user_identifier}' already exists in SQLite auth database")
+                        auth_db_updated = True
+                else:
+                    logger.info("No SQLite auth database configured - skipping auth DB update")
+                    
+            except Exception as e:
+                logger.warning(f"Failed to add user to SQLite auth database: {e}")
+                # Don't fail the provisioning if SQLite update fails
+            
+            # Return success response
+            response_data = {
+                'success': True,
+                'message': f'User {user_identifier} provisioned successfully',
+                'auth_db_updated': auth_db_updated,
+                'username': user_identifier,
+                'note': 'Collection directory will be created on first sync attempt'
+            }
+            
+            return Response(
+                json.dumps(response_data),
+                content_type='application/json',
+                status=200
+            )
+            
+        except HTTPException:
+            # Re-raise HTTP exceptions
+            raise
+        except Exception as e:
+            logger.error(f"Error provisioning user: {str(e)}")
+            raise HTTPInternalServerError(f"Failed to provision user: {str(e)}")
 
 
 class SimpleThreadExecutor:
