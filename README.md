@@ -228,6 +228,72 @@ docker logs anki-sync-server-prod 2>&1 | grep "auth_db_path"
 
 ---
 
+## ⚠️ Common Deployment Issues & Solutions
+
+### 1. AttributeError: 'SyncUserSession' object has no attribute 'username'
+**Symptom:** Sync fails with this error even though connection is successful.
+**Cause:** Code tries to access `session.username` but should use `session.name`.
+**Solution:** Replace all instances of `session.username` with `session.name` in sync_app.py.
+
+### 2. HTTPS Proxy Can't Connect to Sync Server
+**Symptom:** Proxy logs show "Name or service not known" errors.
+**Cause:** Service name mismatch between Docker containers.
+**Solution:** 
+- Ensure SYNC_SERVER_URL environment variable points to correct container name
+- For Cognito setup: `http://anki-sync-server-cognito:27702`
+- Rebuild containers after changing environment variables
+
+### 3. HTTPS Proxy Not Starting
+**Symptom:** Only sync server starts, no proxy container.
+**Cause:** Docker Compose profiles not activated.
+**Solution:** Use `--profile https` flag:
+```bash
+docker-compose -f docker-compose.yml -f docker-compose.cognito.yml --profile https up -d
+```
+
+### 4. CognitoUserManager Initialization Error
+**Symptom:** `TypeError: CognitoUserManager.__init__() takes 2 positional arguments but 3 were given`
+**Cause:** Mismatch between expected constructor signature and usage.
+**Solution:** Pass only config dict to CognitoUserManager:
+```python
+# Wrong:
+return CognitoUserManager(config.get("data_root"), cognito_config)
+# Correct:
+return CognitoUserManager(config)
+```
+
+### 5. Protobuf Compatibility Issues
+**Symptom:** `ImportError: cannot import name 'runtime_version' from 'google.protobuf'`
+**Cause:** Version mismatch between Anki and protobuf packages.
+**Solution:** Pin compatible versions in requirements.txt:
+```
+anki==24.4.1
+protobuf>=4.21,<5
+```
+
+### 6. Server Accessible but Can't Login via Domain
+**Symptom:** Direct access works (`http://localhost:27702`) but domain fails.
+**Cause:** Multiple issues - container networking, proxy configuration, DNS.
+**Debug Steps:**
+1. Check both containers are running: `docker ps`
+2. Verify proxy logs: `docker logs anki-https-proxy-cognito`
+3. Test direct access: `curl http://localhost:27702/sync/hostKey`
+4. Check DNS resolution of your domain
+
+### Quick Recovery Commands
+```bash
+# Stop everything and rebuild with fixes
+docker-compose down
+docker-compose -f docker-compose.yml -f docker-compose.cognito.yml --profile https up --build -d
+
+# Check status
+docker ps
+docker logs anki-sync-server-cognito --tail 10
+docker logs anki-https-proxy-cognito --tail 10
+```
+
+---
+
 ## 🐳 Docker Deployment
 
 A complete Docker setup is provided for development, testing, and production deployment with full HTTPS support.

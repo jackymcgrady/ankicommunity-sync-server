@@ -850,7 +850,7 @@ class SyncApp:
         This is not part of the standard Anki sync protocol.
         """
         user_sync_queue = get_user_sync_queue()
-        username = session.username
+        username = session.name
         status = user_sync_queue.get_queue_status(username)
         return json.dumps(status)
 
@@ -1248,7 +1248,7 @@ class SyncApp:
 
         # Use the user sync queue to ensure only one sync per user at a time
         user_sync_queue = get_user_sync_queue()
-        username = session.username
+        username = session.name
         
         try:
             result = user_sync_queue.execute_sync_operation(username, sync_operation)

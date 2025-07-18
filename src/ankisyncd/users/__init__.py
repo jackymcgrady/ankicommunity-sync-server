@@ -20,7 +20,7 @@ def get_user_manager(config):
             'client_id': config.get("cognito_client_id"),
             'region': config.get("cognito_region", "ap-southeast-1")
         }
-        return CognitoUserManager(config.get("data_root"), cognito_config)
+        return CognitoUserManager(config)
     elif "auth_db_path" in config and config["auth_db_path"]:
         logger.info("Found auth_db_path in config, using SqliteUserManager for auth")
         return SqliteUserManager(config["auth_db_path"], config["data_root"])
