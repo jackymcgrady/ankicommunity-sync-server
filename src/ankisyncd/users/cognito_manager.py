@@ -34,6 +34,9 @@ class CognitoUserManager(SimpleUserManager):
         # Cache for storing user sessions to avoid repeated Cognito calls
         self.user_session_cache = {}
         
+        # Cache for mapping email identifiers to actual usernames
+        self.username_cache = {}
+        
         logger.info(f"Initialized CognitoUserManager for user pool: {self.user_pool_id}")
 
     def authenticate(self, username, password):
@@ -47,10 +50,21 @@ class CognitoUserManager(SimpleUserManager):
                 cached_session = self.user_session_cache[username]
                 if self._is_session_valid(cached_session):
                     logger.info(f"Using cached session for user: {username}")
+                    # Ensure we have the username mapping cached
+                    if username not in self.username_cache:
+                        try:
+                            user_info = self.cognito_client.get_user(
+                                AccessToken=cached_session['access_token']
+                            )
+                            self.username_cache[username] = user_info['Username']
+                        except ClientError:
+                            self.username_cache[username] = username
                     return True
                 else:
                     # Remove expired session from cache
                     del self.user_session_cache[username]
+                    if username in self.username_cache:
+                        del self.username_cache[username]
 
             # Authenticate with Cognito
             auth_params = {
@@ -82,10 +96,23 @@ class CognitoUserManager(SimpleUserManager):
                     'token_type': auth_result.get('TokenType', 'Bearer')
                 }
                 
-                logger.info(f"Authentication succeeded for user: {username}")
+                # Get the actual username from Cognito user attributes
+                try:
+                    user_info = self.cognito_client.get_user(
+                        AccessToken=auth_result['AccessToken']
+                    )
+                    # Extract username from user attributes
+                    actual_username = user_info['Username']
+                    self.username_cache[username] = actual_username
+                    logger.info(f"Authentication succeeded for user: {username}, actual username: {actual_username}")
+                except ClientError as e:
+                    logger.warning(f"Could not retrieve username for {username}: {e}")
+                    # Fallback to email identifier if we can't get the username
+                    self.username_cache[username] = username
                 
-                # Create user directory if it doesn't exist
-                self._create_user_dir(username)
+                # Create user directory using the actual username
+                actual_user = self.username_cache.get(username, username)
+                self._create_user_dir(actual_user)
                 
                 return True
             
@@ -226,6 +253,7 @@ class CognitoUserManager(SimpleUserManager):
     def userdir(self, username):
         """
         Returns the directory name for the given user.
-        For Cognito, we use the username as-is.
+        For Cognito, we use the actual username from user attributes, not the email identifier.
         """
-        return username
+        # Return the cached actual username, or fallback to the email identifier
+        return self.username_cache.get(username, username)
