@@ -118,8 +118,12 @@ class SchemaUpdater:
         }
         
         # Handle schema-specific table mappings
+        # graves table exists in all schemas, but structure changed in V18
+        self._field_mappings['graves'] = self._get_table_fields('graves')
+        
         if self._schema_version >= 18:
-            self._field_mappings['graves'] = self._get_table_fields('graves')
+            # V18 restructured graves table - already handled above
+            pass
         
         if self._schema_version >= 17:
             self._field_mappings['tags'] = self._get_table_fields('tags')
@@ -144,7 +148,12 @@ class SchemaUpdater:
         """Get the actual field names for a table from the database."""
         try:
             # Get table schema
-            schema_info = self.col.db.execute(f"PRAGMA table_info({table_name})").fetchall()
+            schema_result = self.col.db.execute(f"PRAGMA table_info({table_name})")
+            # Handle both cursor and list returns
+            if hasattr(schema_result, 'fetchall'):
+                schema_info = schema_result.fetchall()
+            else:
+                schema_info = schema_result
             fields = [row[1] for row in schema_info]  # row[1] is the column name
             logger.debug(f"Table {table_name} has fields: {fields}")
             return fields
