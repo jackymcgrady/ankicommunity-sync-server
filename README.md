@@ -16,12 +16,12 @@ If you manage multiple Anki clients (desktop, mobile, web) and need a **secure a
 
 ### Production Deployment (nginx + Let's Encrypt)
 ```bash
-# 1. Configure your domain and email
-export EMAIL="your-email@example.com"
-export DOMAIN_NAME="sync.ankipi.com"
+# 1. Configure environment variables for security
+cp .env.example .env
+# Edit .env with your AWS credentials and Cognito settings
 
-# 2. Run automated setup with SSL
-./scripts/setup-nginx-ssl.sh
+# 2. Deploy with secure environment variables
+docker-compose -f docker-compose.nginx.yml up -d
 
 # 3. Verify services are running
 docker-compose -f docker-compose.nginx.yml ps
@@ -30,24 +30,31 @@ docker-compose -f docker-compose.nginx.yml ps
 # Connect Anki to: https://sync.ankipi.com
 ```
 
-### Alternative: Quick Start (Self-signed SSL)
+### ⚠️ SECURITY SETUP REQUIRED
+**CRITICAL**: Never commit AWS credentials to git. Use environment variables:
 ```bash
-# For testing or internal use with self-signed certificates
-docker-compose -f docker-compose.nginx.yml up -d
-
-# Connect Anki to: https://yourdomain.com (accept SSL warning)
+# Required environment variables (set in .env file):
+AWS_ACCESS_KEY_ID=your_access_key_here
+AWS_SECRET_ACCESS_KEY=your_secret_key_here
+ANKISYNCD_COGNITO_USER_POOL_ID=your_user_pool_id
+ANKISYNCD_COGNITO_CLIENT_ID=your_client_id
+ANKISYNCD_COGNITO_CLIENT_SECRET=your_client_secret
 ```
 
 ### Local Development
 ```bash
-# Clone and start with Docker
+# Clone and configure
 git clone https://github.com/jackymcgrady/ankicommunity-sync-server.git
 cd ankicommunity-sync-server
 
-# Start with HTTPS proxy
-docker-compose up -d
+# Setup environment variables
+cp .env.example .env
+# Edit .env with your credentials
 
-# Connect Anki to: https://localhost:27703
+# Start with secure configuration
+docker-compose -f docker-compose.nginx.yml up -d
+
+# Connect Anki to: https://sync.ankipi.com
 ```
 
 ---
@@ -105,30 +112,45 @@ All steps run inside a **single WAL-protected transaction**; on any error the da
 
 ## Configuration
 
-### AWS Cognito Authentication
-The server integrates with AWS Cognito User Pools for secure authentication:
+### ⚠️ Security-First Configuration
+**CRITICAL**: Use `.env` file for all credentials. Never commit secrets to git.
 
-| Environment Variable | Purpose | Example |
-| ------------------- | ------- | ------- |
-| `COGNITO_USER_POOL_ID` | AWS Cognito User Pool ID | `us-east-1_ABC123DEF` |
-| `COGNITO_CLIENT_ID` | App client ID | `1a2b3c4d5e6f7g8h9i0j` |
-| `COGNITO_CLIENT_SECRET` | App client secret (optional) | `secret123...` |
-| `COGNITO_REGION` | AWS region | `us-east-1` |
+### Required Environment Variables
+Copy `.env.example` to `.env` and configure:
 
-### Core Server Settings
+| Environment Variable | Purpose | Required |
+| ------------------- | ------- | -------- |
+| `AWS_ACCESS_KEY_ID` | AWS access key | ✅ Required |
+| `AWS_SECRET_ACCESS_KEY` | AWS secret key | ✅ Required |
+| `ANKISYNCD_COGNITO_USER_POOL_ID` | Cognito User Pool ID | ✅ Required |
+| `ANKISYNCD_COGNITO_CLIENT_ID` | Cognito App client ID | ✅ Required |
+| `ANKISYNCD_COGNITO_CLIENT_SECRET` | Cognito client secret | ✅ Required |
+| `ANKISYNCD_COGNITO_REGION` | AWS region | ✅ Required |
+
+### Optional Configuration
 | Env Var | Purpose | Default |
 | ------- | ------- | ------- |
-| `ANKISYNCD_HOST` | Bind address | `0.0.0.0` |
-| `ANKISYNCD_PORT` | TCP port | `27702` |
-| `ANKISYNCD_DATA_ROOT` | Collections storage | `/app/collections` |
-| `ANKISYNCD_LOG_LEVEL` | `DEBUG` / `INFO` | `INFO` |
+| `DOMAIN_NAME` | Your domain for SSL certificates | `sync.ankipi.com` |
+| `EMAIL` | Email for Let's Encrypt | Required for SSL |
+| `AWS_DEFAULT_REGION` | AWS region fallback | `ap-southeast-1` |
 
-### HTTPS Proxy Settings
-| Env Var | Purpose | Default |
-| ------- | ------- | ------- |
-| `DOMAIN_NAME` | Your domain name for SSL certificates | `localhost` |
-| `ANKI_SERVER_HOST` | Internal sync server hostname | `anki-sync-server` |
-| `ANKI_SERVER_PORT` | Internal sync server port | `27702` |
+### Quick Setup Commands
+```bash
+# 1. Clone and configure
+git clone https://github.com/jackymcgrady/ankicommunity-sync-server.git
+cd ankicommunity-sync-server
+
+# 2. Setup environment (REQUIRED)
+cp .env.example .env
+nano .env  # Add your AWS/Cognito credentials
+
+# 3. Deploy
+docker-compose -f docker-compose.nginx.yml up -d
+
+# 4. Verify
+docker ps  # Should show both containers running
+curl -k https://localhost/sync/hostKey  # Test endpoint
+```
 
 ---
 
@@ -177,24 +199,26 @@ docker-compose -f docker-compose.nginx.yml up -d
 
 ---
 
-## 🔐 User Management with AWS Cognito
+## 🔐 AWS Cognito Authentication
 
-### No Manual User Creation Required
-Users authenticate directly against your AWS Cognito User Pool:
-1. **Create Cognito User Pool** in AWS Console
-2. **Add users** via AWS Console, CLI, or registration flow
-3. **Configure** Docker Compose with Cognito credentials
-4. **Users log in** with their Cognito email/password
+### Prerequisites
+1. **AWS Account** with IAM access key and secret
+2. **Cognito User Pool** with App Client configured
+3. **Environment variables** configured in `.env` file
 
-### Cognito User Pool Setup
+### AWS Setup
 ```bash
-# Example AWS CLI commands for setting up Cognito
-aws cognito-idp create-user-pool --pool-name "anki-sync-users"
-aws cognito-idp create-user-pool-client --user-pool-id "us-east-1_ABC123" --client-name "anki-sync-client"
+# Get your Cognito configuration from AWS Console:
+# 1. Go to Amazon Cognito → User pools
+# 2. Select your user pool
+# 3. Note the User pool ID
+# 4. Go to App integration → App clients
+# 5. Note Client ID and Client secret
 
-# Add users
-aws cognito-idp admin-create-user --user-pool-id "us-east-1_ABC123" --username "user@example.com" --message-action SUPPRESS
-aws cognito-idp admin-set-user-password --user-pool-id "us-east-1_ABC123" --username "user@example.com" --password "TempPassword123!" --permanent
+# Add to your .env file:
+ANKISYNCD_COGNITO_USER_POOL_ID=your_user_pool_id
+ANKISYNCD_COGNITO_CLIENT_ID=your_client_id  
+ANKISYNCD_COGNITO_CLIENT_SECRET=your_client_secret
 ```
 
 ### Collection Directory Structure
@@ -280,22 +304,33 @@ docker logs anki-https-proxy-cognito --tail 10
 ## 🐳 Docker Deployment
 
 ### nginx-based Production Setup (Recommended)
-```bash
-# Setup with automatic Let's Encrypt SSL
-export EMAIL="your-email@example.com"
-./scripts/setup-nginx-ssl.sh
+**Image Size**: Optimized to **244MB** (production setup ~345MB total)
 
-# Verify services are running
+```bash
+# 1. Configure environment variables (REQUIRED)
+cp .env.example .env
+nano .env  # Add your AWS credentials and Cognito settings
+
+# 2. Deploy with secure configuration
+docker-compose -f docker-compose.nginx.yml up -d
+
+# 3. Verify services are running
 docker-compose -f docker-compose.nginx.yml ps
 # Should show:
-# - anki-nginx-proxy (ports 80:80, 443:443)
-# - anki-sync-server-nginx (internal port 27702)
+# - anki-nginx-proxy (119MB, ports 80:80, 443:443)  
+# - anki-sync-server-nginx (226MB, internal port 27702)
 ```
 
 ### Docker Compose Files Available
-- `docker-compose.nginx.yml` - **Recommended**: nginx + Let's Encrypt SSL
-- `docker-compose.cognito.yml` - Legacy: Custom Python HTTPS proxy  
+- `docker-compose.nginx.yml` - **Recommended**: nginx + SSL (345MB total, secure env vars)
+- `docker-compose.cognito.yml` - Alternative: Custom HTTPS proxy (secure env vars)  
 - `docker-compose.yml` - Base development configuration
+
+### Security Features
+- **Environment Variables**: All credentials use secure env vars (never committed)
+- **Optimized Images**: 71% size reduction (856MB → 244MB)
+- **Non-root Containers**: Enhanced security with dedicated user accounts
+- **SSL/TLS**: Production-grade HTTPS with nginx reverse proxy
 
 ### Essential Commands
 
