@@ -7,12 +7,12 @@ services:
       target: development
     container_name: anki-sync-server-nginx
     environment:
-      # AWS Cognito Configuration
+      # AWS Cognito Configuration - Use environment variables for security
       - ANKISYNCD_USER_MANAGER=ankisyncd.users.cognito_manager.CognitoUserManager
-      - ANKISYNCD_COGNITO_USER_POOL_ID=ap-southeast-1_aDQ1S4x28
-      - ANKISYNCD_COGNITO_CLIENT_ID=39utiksk7tuap6md80uoicpdd4
-      - ANKISYNCD_COGNITO_CLIENT_SECRET=h3e63ochjdd1mjmicqu8v3g7hlebf728cuvu6jgbf7h66dj4j2q
-      - ANKISYNCD_COGNITO_REGION=ap-southeast-1
+      - ANKISYNCD_COGNITO_USER_POOL_ID=${ANKISYNCD_COGNITO_USER_POOL_ID}
+      - ANKISYNCD_COGNITO_CLIENT_ID=${ANKISYNCD_COGNITO_CLIENT_ID}
+      - ANKISYNCD_COGNITO_CLIENT_SECRET=${ANKISYNCD_COGNITO_CLIENT_SECRET}
+      - ANKISYNCD_COGNITO_REGION=${ANKISYNCD_COGNITO_REGION:-ap-southeast-1}
       
       # AWS Credentials - Use environment variables for security
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}

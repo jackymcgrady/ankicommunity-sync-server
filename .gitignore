@@ -342,9 +342,10 @@ scripts/aws-deploy.sh
 rebuild_and_restart.sh
 cleanup_user_data.sh
 
-# Ignore environment files
+# Ignore environment files with credentials
 .env
 .env.*
+!.env.example
 
 # Ignore certbot and certificate output
 certbot/conf/
