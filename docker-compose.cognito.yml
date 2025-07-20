@@ -1,0 +1,68 @@
+services:
+  anki-sync-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: anki-sync-server-cognito
+    ports:
+      - "80:27702"  # ALB will forward HTTP to container port 27702
+    environment:
+      # AWS Cognito Configuration - Use environment variables for security
+      - ANKISYNCD_USER_MANAGER=ankisyncd.users.cognito_manager.CognitoUserManager
+      - ANKISYNCD_COGNITO_USER_POOL_ID=${ANKISYNCD_COGNITO_USER_POOL_ID}
+      - ANKISYNCD_COGNITO_CLIENT_ID=${ANKISYNCD_COGNITO_CLIENT_ID}
+      - ANKISYNCD_COGNITO_CLIENT_SECRET=${ANKISYNCD_COGNITO_CLIENT_SECRET}
+      - ANKISYNCD_COGNITO_REGION=${ANKISYNCD_COGNITO_REGION:-ap-southeast-1}
+      
+      # AWS Credentials - Use environment variables for security
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-ap-southeast-1}
+      
+      # Server Configuration
+      - ANKISYNCD_HOST=0.0.0.0
+      - ANKISYNCD_PORT=27702
+      - ANKISYNCD_DATA_ROOT=/data/collections
+      - ANKISYNCD_BASE_URL=/sync/
+      - ANKISYNCD_BASE_MEDIA_URL=/msync/
+      - ANKISYNCD_SESSION_DB_PATH=/data/session.db
+      - ANKISYNCD_AUTH_DB_PATH=
+    volumes:
+      - ./data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:27702/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  anki-https-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile.proxy
+    container_name: anki-https-proxy-cognito
+    ports:
+      - "80:80"
+      - "443:27703"
+    environment:
+      - SYNC_SERVER_URL=http://anki-sync-server-cognito:27702
+      - DOMAIN_NAME=sync.ankipi.com
+      - DOMAIN=sync.ankipi.com
+      - CERT_PATH=/app/certs/sync.ankipi.com.crt
+      - KEY_PATH=/app/certs/sync.ankipi.com.key
+    volumes:
+      - ./certs:/app/certs:ro
+    depends_on:
+      - anki-sync-server
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  data:
+    driver: local
