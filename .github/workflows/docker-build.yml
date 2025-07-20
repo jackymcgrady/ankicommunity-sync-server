@@ -69,13 +69,13 @@ jobs:
         echo "Built tags: ${{ steps.meta.outputs.tags }}"
         echo "Image digest: ${{ steps.build.outputs.digest }}"
 
-    - name: Build and push HTTPS proxy image
+    - name: Build and push nginx proxy image
       uses: docker/build-push-action@v5
       with:
         context: .
-        file: ./Dockerfile.proxy
+        file: ./Dockerfile.nginx
         push: ${{ github.event_name != 'pull_request' }}
-        tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-proxy:${{ steps.meta.outputs.version }}
+        tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-nginx:${{ steps.meta.outputs.version }}
         labels: ${{ steps.meta.outputs.labels }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
