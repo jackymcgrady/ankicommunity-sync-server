@@ -1,11 +1,11 @@
 services:
+  # Anki Sync Server with Cognito authentication
   anki-sync-server:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: anki-sync-server-cognito
-    ports:
-      - "80:27702"  # ALB will forward HTTP to container port 27702
+    container_name: anki-sync-server-nginx
+    user: "1000:1000"
     environment:
       # AWS Cognito Configuration - Use environment variables for security
       - ANKISYNCD_USER_MANAGER=ankisyncd.users.cognito_manager.CognitoUserManager
@@ -27,8 +27,13 @@ services:
       - ANKISYNCD_BASE_MEDIA_URL=/msync/
       - ANKISYNCD_SESSION_DB_PATH=/data/session.db
       - ANKISYNCD_AUTH_DB_PATH=
+      
+      # Python path for development
+      - PYTHONPATH=/app/src
     volumes:
+      - ./src:/app/src
       - ./data:/data
+      - ./config:/app/config
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:27702/"]
@@ -36,33 +41,61 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
+    networks:
+      - anki-network
 
-  anki-https-proxy:
+  # nginx reverse proxy with Let's Encrypt SSL
+  nginx:
     build:
       context: .
-      dockerfile: Dockerfile.proxy
-    container_name: anki-https-proxy-cognito
+      dockerfile: Dockerfile.nginx
+    container_name: anki-nginx-proxy
     ports:
-      - "80:80"
-      - "443:27703"
-    environment:
-      - SYNC_SERVER_URL=http://anki-sync-server-cognito:27702
-      - DOMAIN_NAME=sync.ankipi.com
-      - DOMAIN=sync.ankipi.com
-      - CERT_PATH=/app/certs/sync.ankipi.com.crt
-      - KEY_PATH=/app/certs/sync.ankipi.com.key
+      - "80:80"    # HTTP (redirects to HTTPS)
+      - "443:443"  # HTTPS
     volumes:
-      - ./certs:/app/certs:ro
+      # SSL certificates (Let's Encrypt)
+      - ./letsencrypt:/etc/letsencrypt:rw
+      # Web root for ACME challenge
+      - ./certbot-www:/var/www/certbot:rw
+      # nginx logs
+      - ./logs/nginx:/var/log/nginx
+    environment:
+      - DOMAIN_NAME=sync.ankipi.com
     depends_on:
       - anki-sync-server
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:80/"]
+      test: ["CMD", "curl", "-f", "http://localhost/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 40s
+      start_period: 10s
+    networks:
+      - anki-network
+
+  # Certbot for Let's Encrypt certificate management
+  certbot:
+    image: certbot/certbot
+    container_name: anki-certbot
+    volumes:
+      - ./letsencrypt:/etc/letsencrypt:rw
+      - ./certbot-www:/var/www/certbot:rw
+      - ./logs/certbot:/var/log/letsencrypt
+    command: certonly --webroot --webroot-path=/var/www/certbot --email your-email@example.com --agree-tos --no-eff-email -d sync.ankipi.com
+    profiles:
+      - certbot
+    networks:
+      - anki-network
+
+networks:
+  anki-network:
+    driver: bridge
 
 volumes:
   data:
+    driver: local
+  letsencrypt:
+    driver: local
+  certbot-www:
     driver: local
