@@ -11,6 +11,7 @@ test_cognito_auth.py
 
 /ankisyncd/_version.py
 /collections
+src/collections/
 /venv
 
 /config/*

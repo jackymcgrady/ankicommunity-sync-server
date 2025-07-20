@@ -13,6 +13,7 @@ services:
       - ./src:/app/src
       - ./data:/data
       - ./config:/app/config
+      - ./collections:/app/collections
     environment:
       - PYTHONPATH=/app/src
       - ANKISYNCD_CONFIG_PATH=/app/ankisyncd.conf
@@ -55,6 +56,7 @@ services:
     volumes:
       - ./data:/data
       - ./config:/app/config
+      - ./collections:/app/collections
     environment:
       - ANKISYNCD_CONFIG_PATH=/app/ankisyncd.conf
     restart: unless-stopped
