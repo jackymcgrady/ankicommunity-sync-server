@@ -1,35 +1,53 @@
 # Anki Sync Server
 
-A modern, open-source implementation of Anki's v2.1.57+ sync protocol.  
-If you manage multiple Anki clients (desktop, mobile, web) and need a **self-hosted** alternative to AnkiWeb, this server keeps every device in lock-step—collections, media, and change history included.
+A production-ready, self-hosted implementation of Anki's sync protocol with AWS Cognito authentication and HTTPS support.  
+If you manage multiple Anki clients (desktop, mobile, web) and need a **secure alternative** to AnkiWeb, this server keeps every device in perfect sync—collections, media, and review history included.
+
+## ✅ Production Status
+
+**WORKING FEATURES:**
+- ✅ **HTTPS connectivity** via `https://sync.ankipi.com`
+- ✅ **AWS Cognito authentication** with username-based collection folders
+- ✅ **Fast media sync** - thousands of files sync swiftly
+- ✅ **Modern Anki client compatibility** (v25.02+)
+- ✅ **Docker deployment** with automatic SSL/TLS termination
 
 ## 🚀 Quick Start
+
+### Production Deployment (nginx + Let's Encrypt)
+```bash
+# 1. Configure your domain and email
+export EMAIL="your-email@example.com"
+export DOMAIN_NAME="sync.ankipi.com"
+
+# 2. Run automated setup with SSL
+./scripts/setup-nginx-ssl.sh
+
+# 3. Verify services are running
+docker-compose -f docker-compose.nginx.yml ps
+
+# 4. Users authenticate via Cognito - no manual user creation needed
+# Connect Anki to: https://sync.ankipi.com
+```
+
+### Alternative: Quick Start (Self-signed SSL)
+```bash
+# For testing or internal use with self-signed certificates
+docker-compose -f docker-compose.nginx.yml up -d
+
+# Connect Anki to: https://yourdomain.com (accept SSL warning)
+```
 
 ### Local Development
 ```bash
 # Clone and start with Docker
 git clone https://github.com/jackymcgrady/ankicommunity-sync-server.git
 cd ankicommunity-sync-server
-./scripts/docker-dev.sh https
 
-# Create a user
-python3 add_email_user.py
+# Start with HTTPS proxy
+docker-compose up -d
 
 # Connect Anki to: https://localhost:27703
-```
-
-### Production Deployment (AWS Lightsail)
-```bash
-# 1. Set up your domain DNS to point to your server
-# 2. Configure environment
-cp env.production.example .env
-# Edit .env with your domain and email
-
-# 3. Deploy with automatic SSL
-./scripts/aws-deploy.sh
-
-# 4. Create users and start syncing
-python3 add_email_user.py
 ```
 
 ---
@@ -57,13 +75,12 @@ Behind that *Sync* button lives a carefully orchestrated sequence of database me
 | ------ | -------------- |
 | `sync_app.py` & `server.py` | ASGI/WSGI entry points; route RPC calls to handlers |
 | `sync.py` | High-level orchestration of the sync transaction |
-| `collection/` | Thin wrapper over SQLite collection with versioned schema upgrades |
-| `full_sync/` | Fallback path when incremental sync cannot resolve divergence |
+| `collection/` | SQLite collection wrapper with schema upgrades |
 | `media_manager.py` | Deduplicates, normalizes, and streams media files |
-| `sessions/` | Short-lived auth tokens reused by mobile clients |
-| `users/` | Pluggable user backend (simple JSON, SQLite, or custom) |
+| `users/cognito_manager.py` | **AWS Cognito authentication** with username-based collections |
+| `https_proxy.py` | **Custom HTTPS proxy** with SSL termination and Anki protocol optimization |
 
-Each component is **loosely coupled** so you can swap backends or add metrics without touching core logic.
+Each component is **loosely coupled** for easy customization and monitoring integration.
 
 ---
 
@@ -87,144 +104,110 @@ All steps run inside a **single WAL-protected transaction**; on any error the da
 ---
 
 ## Configuration
-Settings can be supplied via **environment variables** (recommended) or a classic `ankisyncd.conf` file.
 
+### AWS Cognito Authentication
+The server integrates with AWS Cognito User Pools for secure authentication:
+
+| Environment Variable | Purpose | Example |
+| ------------------- | ------- | ------- |
+| `COGNITO_USER_POOL_ID` | AWS Cognito User Pool ID | `us-east-1_ABC123DEF` |
+| `COGNITO_CLIENT_ID` | App client ID | `1a2b3c4d5e6f7g8h9i0j` |
+| `COGNITO_CLIENT_SECRET` | App client secret (optional) | `secret123...` |
+| `COGNITO_REGION` | AWS region | `us-east-1` |
+
+### Core Server Settings
 | Env Var | Purpose | Default |
 | ------- | ------- | ------- |
-| `ANKISYNCD_HOST` | Bind address | `127.0.0.1` |
-| `ANKISYNCD_PORT` | TCP port | `27701` |
-| `ANKISYNCD_COLLECTIONS_PATH` | Where user data lives | `./collections` |
-| `ANKISYNCD_AUTH_DB_PATH` | Auth backend (when using SQLite) | `./auth.db` |
+| `ANKISYNCD_HOST` | Bind address | `0.0.0.0` |
+| `ANKISYNCD_PORT` | TCP port | `27702` |
+| `ANKISYNCD_DATA_ROOT` | Collections storage | `/app/collections` |
 | `ANKISYNCD_LOG_LEVEL` | `DEBUG` / `INFO` | `INFO` |
 
----
-
-## Running Locally (Developer Mode)
-```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -r src/requirements.txt
-pip install -e src
-python -m ankisyncd
-```
-The server now listens on `http://127.0.0.1:27701`—point your client there under *Preferences → Sync*.
+### HTTPS Proxy Settings
+| Env Var | Purpose | Default |
+| ------- | ------- | ------- |
+| `DOMAIN_NAME` | Your domain name for SSL certificates | `localhost` |
+| `ANKI_SERVER_HOST` | Internal sync server hostname | `anki-sync-server` |
+| `ANKI_SERVER_PORT` | Internal sync server port | `27702` |
 
 ---
 
-## 🔐 Authentication Database Management
+## Architecture Overview
 
-### Understanding Auth Database Location
-
-The auth database location depends on your deployment configuration:
-
-#### Development (Local)
-- **Config file**: `src/ankisyncd.conf` sets `auth_db_path = ./auth.db`
-- **Working directory**: Server runs from project root
-- **Actual location**: `./auth.db` (project root)
-- **Docker mount**: `./auth.db:/app/auth.db` (if using docker-compose.override.yml)
-
-#### Production
-- **Environment variable**: `ANKISYNCD_AUTH_DB_PATH=/app/collections/auth.db`
-- **Docker volume**: `./data/collections:/app/collections`
-- **Actual location**: `./data/collections/auth.db` (host) → `/app/collections/auth.db` (container)
-
-### Creating Users
-
-#### Method 1: Using Python Script (Recommended)
-```python
-#!/usr/bin/env python3
-import sqlite3
-import hashlib
-import binascii
-import os
-
-def create_auth_db(db_path, username, password):
-    """Create auth database with user credentials"""
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    
-    # Create auth table
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS auth (
-            username VARCHAR PRIMARY KEY, 
-            hash VARCHAR
-        )
-    """)
-    
-    # Create password hash (matches server's method)
-    salt = binascii.b2a_hex(os.urandom(8))
-    pass_hash = (
-        hashlib.sha256((username + password).encode() + salt).hexdigest()
-        + salt.decode()
-    )
-    
-    # Add user
-    cursor.execute("INSERT OR REPLACE INTO auth VALUES (?, ?)", (username, pass_hash))
-    conn.commit()
-    conn.close()
-    print(f"Created auth.db with user: {username}")
-
-# Usage examples:
-# Development: create_auth_db("./auth.db", "user@example.com", "password123")
-# Production: create_auth_db("./data/collections/auth.db", "user@example.com", "password123")
+### Production Architecture (nginx-based)
+```
+[Anki Client] → [Port 443/HTTPS] → [nginx Reverse Proxy] → [Port 27702/HTTP] → [Sync Server] → [AWS Cognito]
+                                           ↓ SSL Termination
+                                    [anki-nginx-proxy]         [anki-sync-server-nginx]
 ```
 
-#### Method 2: Using Docker Exec (For Running Containers)
+### nginx HTTPS Implementation
+
+**nginx Reverse Proxy** (`Dockerfile.nginx`):
+- **Technology**: Production-grade nginx with Alpine Linux
+- **SSL Management**: Automatic Let's Encrypt certificates via certbot
+- **Features**:
+  - HTTP/2 enabled for performance
+  - Strong SSL cipher suites (TLS 1.2/1.3)
+  - Security headers (HSTS, X-Frame-Options, etc.)
+  - Large file uploads (2GB max for collections)
+  - Real-time proxy (buffering disabled)
+
+**Why nginx**:
+- ✅ **Production proven** - battle-tested reverse proxy
+- ✅ **Performance** - efficient handling of HTTPS/HTTP/2
+- ✅ **SSL automation** - integrated Let's Encrypt support
+- ✅ **Security** - comprehensive security headers and configurations
+- ✅ **Monitoring** - detailed access/error logs
+
+**Certificate Management**:
 ```bash
-# Development container
-docker exec anki-sync-server-dev python3 -c "
-from ankisyncd.users.sqlite_manager import SqliteUserManager
-mgr = SqliteUserManager('/app/auth.db', '/app/collections')
-mgr.add_user('user@example.com', 'password123')
-print('User added successfully')
-"
+# Automatic Let's Encrypt certificates
+./scripts/setup-nginx-ssl.sh  # Initial setup
+./renew-certs.sh              # Renewal (add to crontab)
 
-# Production container
-docker exec anki-sync-server-prod python3 -c "
-from ankisyncd.users.sqlite_manager import SqliteUserManager
-mgr = SqliteUserManager('/app/collections/auth.db', '/app/collections')
-mgr.add_user('user@example.com', 'password123')
-print('User added successfully')
-"
+# Self-signed fallback for development
+docker-compose -f docker-compose.nginx.yml up -d
 ```
 
-### Verifying Authentication
+**AWS Cognito Integration**:
+- Collection folders: `/data/collections/users/{cognito_username}/`
+- Session caching reduces API calls  
+- Supports multiple auth flows (`USER_PASSWORD_AUTH`, `ADMIN_NO_SRP_AUTH`)
 
+---
+
+## 🔐 User Management with AWS Cognito
+
+### No Manual User Creation Required
+Users authenticate directly against your AWS Cognito User Pool:
+1. **Create Cognito User Pool** in AWS Console
+2. **Add users** via AWS Console, CLI, or registration flow
+3. **Configure** Docker Compose with Cognito credentials
+4. **Users log in** with their Cognito email/password
+
+### Cognito User Pool Setup
 ```bash
-# Test authentication (adjust paths for your deployment)
-docker exec anki-sync-server-prod python3 -c "
-from ankisyncd.users.sqlite_manager import SqliteUserManager
-mgr = SqliteUserManager('/app/collections/auth.db', '/app/collections')
-result = mgr.authenticate('user@example.com', 'password123')
-print('Authentication test:', 'SUCCESS' if result else 'FAILED')
-users = mgr.user_list()
-print('Users in database:', users)
-"
+# Example AWS CLI commands for setting up Cognito
+aws cognito-idp create-user-pool --pool-name "anki-sync-users"
+aws cognito-idp create-user-pool-client --user-pool-id "us-east-1_ABC123" --client-name "anki-sync-client"
+
+# Add users
+aws cognito-idp admin-create-user --user-pool-id "us-east-1_ABC123" --username "user@example.com" --message-action SUPPRESS
+aws cognito-idp admin-set-user-password --user-pool-id "us-east-1_ABC123" --username "user@example.com" --password "TempPassword123!" --permanent
 ```
 
-### Troubleshooting Auth Issues
-
-#### Common Problems:
-1. **"no such table: auth"** → Database doesn't exist or is empty
-2. **"Authentication failed for nonexistent user"** → User not in database
-3. **"Auth DB doesn't exist"** → Wrong path or file not created
-
-#### Debug Steps:
-```bash
-# Check if auth.db exists and location
-ls -la ./auth.db                    # Development
-ls -la ./data/collections/auth.db   # Production
-
-# Check database contents
-sqlite3 ./data/collections/auth.db "SELECT username FROM auth;"
-
-# Check container logs for auth path
-docker logs anki-sync-server-prod 2>&1 | grep "auth_db_path"
+### Collection Directory Structure
+When users authenticate, collections are automatically organized by Cognito username:
 ```
-
-#### Key Learning: Environment Variables Override Config Files
-- The production `docker-compose.prod.yml` sets `ANKISYNCD_AUTH_DB_PATH=/app/collections/auth.db`
-- This overrides the `auth_db_path = ./auth.db` setting in `ankisyncd.conf`
-- Always check both config files AND environment variables to determine the actual auth database location
+/app/collections/users/
+├── john.doe/           # Cognito username (not email)
+│   ├── collection.anki2
+│   └── collection.media/
+└── jane.smith/
+    ├── collection.anki2
+    └── collection.media/
+```
 
 ---
 
@@ -296,103 +279,94 @@ docker logs anki-https-proxy-cognito --tail 10
 
 ## 🐳 Docker Deployment
 
-A complete Docker setup is provided for development, testing, and production deployment with full HTTPS support.
-
-### Quick Start
-
+### nginx-based Production Setup (Recommended)
 ```bash
-# Development with HTTP only
-./scripts/docker-dev.sh up
+# Setup with automatic Let's Encrypt SSL
+export EMAIL="your-email@example.com"
+./scripts/setup-nginx-ssl.sh
 
-# Development with HTTPS (recommended)
-./scripts/docker-dev.sh certs   # Generate SSL certificates
-./scripts/docker-dev.sh https   # Start with HTTPS proxy
-
-# Production testing
-./scripts/docker-dev.sh prod
+# Verify services are running
+docker-compose -f docker-compose.nginx.yml ps
+# Should show:
+# - anki-nginx-proxy (ports 80:80, 443:443)
+# - anki-sync-server-nginx (internal port 27702)
 ```
 
-**Access URLs:**
-- HTTP: `http://localhost:27701`
-- HTTPS: `https://localhost:27703`
+### Docker Compose Files Available
+- `docker-compose.nginx.yml` - **Recommended**: nginx + Let's Encrypt SSL
+- `docker-compose.cognito.yml` - Legacy: Custom Python HTTPS proxy  
+- `docker-compose.yml` - Base development configuration
 
 ### Essential Commands
 
 ```bash
-# Container Management
-./scripts/docker-dev.sh build    # Build Docker images
-./scripts/docker-dev.sh up       # Start development environment
-./scripts/docker-dev.sh https    # Start with HTTPS proxy
-./scripts/docker-dev.sh down     # Stop all containers
-./scripts/docker-dev.sh restart  # Restart containers
-./scripts/docker-dev.sh status   # Check container status
+# Production deployment with nginx + SSL
+docker-compose -f docker-compose.nginx.yml up -d
 
-# Monitoring & Debugging
-./scripts/docker-dev.sh logs     # View server logs
-docker-compose logs -f           # Real-time logs from all containers
-docker-compose logs -t --tail=50 # Recent logs with timestamps
-docker exec -it anki-sync-server-dev bash  # Shell access
+# View logs
+docker-compose -f docker-compose.nginx.yml logs -f nginx
+docker-compose -f docker-compose.nginx.yml logs -f anki-sync-server
 
-# SSL Certificate Management
-./scripts/setup-https-certs.sh self-signed   # Generate self-signed cert
-./scripts/setup-https-certs.sh letsencrypt   # Get Let's Encrypt cert
-./scripts/setup-https-certs.sh info          # Check certificate info
+# Monitor sync activity
+docker logs anki-sync-server-nginx 2>&1 | grep -E "(Authentication|SUCCESS|ERROR)"
+
+# nginx access logs (sync requests)
+docker exec anki-nginx-proxy tail -f /var/log/nginx/access.log
+
+# Container shell access
+docker exec -it anki-sync-server-nginx bash
+
+# SSL certificate renewal
+./renew-certs.sh
+
+# Stop services
+docker-compose -f docker-compose.nginx.yml down
 ```
 
-### Production Deployment
+### Volume Mounts (Critical for Data Persistence)
+```yaml
+volumes:
+  # Collections storage - MUST persist across restarts
+  - ./data:/data
+  
+  # Let's Encrypt SSL certificates
+  - ./letsencrypt:/etc/letsencrypt:rw
+  
+  # Web root for ACME challenge
+  - ./certbot-www:/var/www/certbot:rw
+  
+  # nginx logs
+  - ./logs/nginx:/var/log/nginx
+```
 
+### Container Architecture
+```
+anki-nginx-proxy        (ports 80:80, 443:443)
+    ↓ nginx reverse proxy ↓
+anki-sync-server-nginx  (internal port 27702)
+    ↓ authenticates via ↓  
+AWS Cognito User Pool
+    ↓ stores collections in ↓
+./data/collections/users/{cognito_username}/
+```
+
+### Health Monitoring & SSL Management
 ```bash
-# Deploy to production server
-./scripts/docker-deploy.sh production latest
+# Check container health
+docker-compose -f docker-compose.nginx.yml ps
 
-# Check deployment status
-./scripts/docker-deploy.sh status
+# Monitor nginx access logs
+docker exec anki-nginx-proxy tail -f /var/log/nginx/access.log
 
-# View production logs
-./scripts/docker-deploy.sh logs
+# Check SSL certificate status
+docker exec anki-nginx-proxy openssl x509 -in /etc/letsencrypt/live/sync.ankipi.com/fullchain.pem -text -noout | grep -E "(Subject|Not After)"
 
-# Rollback if needed
-./scripts/docker-deploy.sh rollback
+# Renew SSL certificates (setup as cron job)
+0 12 * * * cd /path/to/project && ./renew-certs.sh
+
+# Monitor resource usage
+docker stats anki-nginx-proxy anki-sync-server-nginx
 ```
-
-### Docker Architecture
-
-- **Multi-stage Dockerfile**: Optimized builds for development and production
-- **HTTPS Proxy**: Automatic SSL/TLS termination with certificate generation
-- **Health Checks**: Built-in container health monitoring
-- **Volume Persistence**: Data survives container restarts
-- **GitHub Actions**: Automated image building and publishing
-
-### Monitoring Sync Activity
-
-```bash
-# Real-time sync monitoring
-docker-compose logs -f | grep -E "(sync|meta|hostKey|msync)"
-
-# Check container resources
-docker stats
-
-# Inspect specific sync requests
-docker logs anki-sync-server-dev --tail=100
-```
-
-### Troubleshooting
-
-```bash
-# Clean restart
-docker-compose down --volumes --remove-orphans
-docker system prune -f
-./scripts/docker-dev.sh build && ./scripts/docker-dev.sh https
-
-# Check port conflicts
-lsof -i :27701 && lsof -i :27703
-
-# Container debugging
-docker inspect anki-sync-server-dev
-docker exec anki-sync-server-dev ps aux
-```
-
-For complete Docker documentation, see [`DOCKER_GUIDE.md`](DOCKER_GUIDE.md).
 
 ---
 
@@ -493,72 +467,110 @@ docker-compose down && docker-compose up -d
 | `no such table: auth` | Database not initialized | Auto-create database schema on startup |
 | `error sending request for url ()` | Self-signed certificate rejected by client | Use proper SSL certificate or add to system trust store |
 
-## 🔧 Deployment Configuration
+## 🔧 Production Configuration
 
-### Environment Variables
-
-The server supports the following environment variables for production deployment:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DOMAIN_NAME` | `localhost` | Your domain name for SSL certificates |
-| `EMAIL` | - | Email for Let's Encrypt certificate registration |
-| `ANKI_SYNC_SERVER_HOST` | `anki-sync-server` | Internal hostname of sync server |
-| `ANKI_SYNC_SERVER_PORT` | `27702` | Internal port of sync server |
-| `HTTPS_CERT_PATH` | `/app/certs` | Path to SSL certificates |
-| `ANKISYNCD_DATA_ROOT` | `/app/collections` | Path to collections storage |
-| `ANKISYNCD_AUTH_DB_PATH` | `/app/collections/auth.db` | Path to user database |
-
-### Volume Mounts
-
-**Critical**: Collections are stored in `/app/collections/users/` inside the container.
-
+### Required Environment Variables (docker-compose.cognito.yml)
 ```yaml
-volumes:
-  # Correct collection mount
-  - ./data/collections:/app/collections
+environment:
+  # AWS Cognito Settings
+  COGNITO_USER_POOL_ID: "us-east-1_ABC123DEF"    # Your Cognito User Pool ID
+  COGNITO_CLIENT_ID: "1a2b3c4d5e6f7g8h9i0j"      # Your App Client ID
+  COGNITO_CLIENT_SECRET: "your-client-secret"      # Optional: App Client Secret
+  COGNITO_REGION: "us-east-1"                     # AWS Region
   
-  # Certificate storage
-  - ./certs:/app/certs:ro
+  # Server Configuration
+  ANKISYNCD_HOST: "0.0.0.0"
+  ANKISYNCD_PORT: "27702"
+  ANKISYNCD_DATA_ROOT: "/app/collections"
   
-  # Let's Encrypt challenge
-  - ./certbot/www:/var/www/certbot:ro
+  # HTTPS Proxy Settings
+  DOMAIN_NAME: "yourdomain.com"                   # Your actual domain
+  ANKI_SERVER_HOST: "anki-sync-server-cognito"   # Internal container name
+  ANKI_SERVER_PORT: "27702"                      # Internal sync server port
 ```
 
-### SSL Certificate Handling
+### SSL Certificate Management
+The HTTPS proxy (`https_proxy.py`) automatically handles SSL certificates:
 
-The HTTPS proxy automatically detects and uses certificates in this priority order:
+1. **Checks for Let's Encrypt**: `/app/certs/{domain}.crt` and `{domain}.key`
+2. **Falls back to self-signed**: `/app/certs/localhost+3.pem` and `localhost+3-key.pem`
+3. **Serves HTTPS on port 27703**
 
-1. **Let's Encrypt**: `{cert_path}/{domain_name}.crt` and `{domain_name}.key`
-2. **Self-signed**: `{cert_path}/localhost+3.pem` and `localhost+3-key.pem`
-
-For production, use the AWS deployment script which handles Let's Encrypt automatically.
+### Critical Volume Mounts
+```yaml
+volumes:
+  # MUST mount collections for data persistence
+  - ./data/collections:/app/collections
+  
+  # Optional: External SSL certificates
+  - ./certs:/app/certs:ro
+```
 
 ### Production Monitoring
-
 ```bash
-# Monitor sync activity
-docker logs anki-sync-server -f | grep -E "(SUCCESS|ERROR|Authentication)"
+# Monitor authentication events
+docker logs anki-sync-server-cognito 2>&1 | grep "Authentication"
 
-# Check for deprecation warnings (cosmetic only)
-docker logs anki-sync-server 2>&1 | grep "deprecated"
+# Check sync operations
+docker logs anki-sync-server-cognito 2>&1 | grep -E "(sync|SUCCESS|ERROR)"
 
-# Verify user database
-docker exec anki-sync-server python -c "
-from ankisyncd.users.sqlite_manager import SqliteUserManager
-mgr = SqliteUserManager('/data/auth.db', '/data/collections')
-print('Users:', mgr.user_list())
+# View collection structure
+docker exec anki-sync-server-cognito ls -la /app/collections/users/
+
+# Check Cognito connectivity
+docker exec anki-sync-server-cognito python3 -c "
+import boto3
+client = boto3.client('cognito-idp', region_name='us-east-1')
+print('Cognito connection: OK')
 "
 ```
 
+### Security Considerations
+- **Cognito credentials** stored as environment variables (not in code)
+- **Collection isolation** by username prevents user data crossover
+- **HTTPS enforcement** ensures encrypted client-server communication
+- **No local auth database** reduces attack surface
+
 ---
 
-## Extending & Hacking
-* Swap in your own **user manager** (`users/`) for OAuth or LDAP auth.
-* Emit **Prometheus metrics** by wrapping the ASGI app with middleware.
-* Plug a remote filesystem or S3 into `media_manager.py`—paths are abstracted through a single interface.
+## Extending & Customization
 
-Pull requests welcome; see `CONTRIBUTING.md` for guidelines.
+### Authentication Backends
+The current implementation uses AWS Cognito (`cognito_manager.py`), but the architecture supports:
+* **Custom OAuth providers** - implement new manager in `users/`
+* **LDAP integration** - extend base authentication manager
+* **Multi-tenant auth** - add organization-based user isolation
+
+### Monitoring Integration
+* **Prometheus metrics** - wrap ASGI app with metrics middleware
+* **Logging enhancements** - structured logging for sync operations
+* **Health checks** - extend container health monitoring
+
+### Storage Customization
+* **S3 media storage** - replace local filesystem in `media_manager.py`
+* **Database clustering** - distribute collections across multiple nodes
+* **Backup automation** - implement automated collection backups
+
+### Performance Optimization
+* **Redis session caching** - replace in-memory Cognito session cache
+* **CDN integration** - serve media files through CDN
+* **Load balancing** - scale sync servers horizontally
+
+---
+
+## Project Status
+
+**✅ PRODUCTION READY**
+- Successfully deployed at `https://sync.ankipi.com`
+- Handles thousands of media files efficiently
+- Secure AWS Cognito authentication
+- Modern Anki client compatibility (v25.02+)
+- Docker deployment with HTTPS termination
+
+**🔧 CONFIGURATION REQUIRED**
+- AWS Cognito User Pool setup
+- Domain name and SSL certificates
+- Docker Compose environment variables
 
 ---
 

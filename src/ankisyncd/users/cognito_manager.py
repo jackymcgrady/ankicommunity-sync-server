@@ -31,6 +31,13 @@ class CognitoUserManager(SimpleUserManager):
         # Initialize Cognito client
         self.cognito_client = boto3.client('cognito-idp', region_name=self.region)
         
+        # Debug: Print actual configuration values
+        print(f"DEBUG: CognitoUserManager initialized with:")
+        print(f"  user_pool_id: {self.user_pool_id}")
+        print(f"  client_id: {self.client_id}")
+        print(f"  client_secret: {'***' if self.client_secret else 'None'}")
+        print(f"  region: {self.region}")
+        
         # Cache for storing user sessions to avoid repeated Cognito calls
         self.user_session_cache = {}
         
@@ -76,12 +83,29 @@ class CognitoUserManager(SimpleUserManager):
             if self.client_secret:
                 auth_params['SECRET_HASH'] = self._calculate_secret_hash(username)
 
-            response = self.cognito_client.admin_initiate_auth(
-                UserPoolId=self.user_pool_id,
-                ClientId=self.client_id,
-                AuthFlow='ADMIN_NO_SRP_AUTH',
-                AuthParameters=auth_params
-            )
+            print(f"DEBUG: Attempting auth for user: {username}")
+            print(f"DEBUG: Using user_pool_id: {self.user_pool_id}")
+            print(f"DEBUG: Using client_id: {self.client_id}")
+            print(f"DEBUG: Has client_secret: {bool(self.client_secret)}")
+
+            try:
+                # Try standard user-level auth first (requires fewer permissions)
+                response = self.cognito_client.initiate_auth(
+                    ClientId=self.client_id,
+                    AuthFlow='USER_PASSWORD_AUTH',
+                    AuthParameters=auth_params
+                )
+                print(f"DEBUG: Successfully used USER_PASSWORD_AUTH flow")
+            except Exception as e:
+                print(f"DEBUG: USER_PASSWORD_AUTH failed: {e}")
+                # Fallback to admin auth
+                response = self.cognito_client.admin_initiate_auth(
+                    UserPoolId=self.user_pool_id,
+                    ClientId=self.client_id,
+                    AuthFlow='ADMIN_NO_SRP_AUTH',
+                    AuthParameters=auth_params
+                )
+                print(f"DEBUG: Fell back to ADMIN_NO_SRP_AUTH flow")
 
             # Handle successful authentication
             if 'AuthenticationResult' in response:
