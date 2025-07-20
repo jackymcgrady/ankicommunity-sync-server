@@ -1,5 +1,5 @@
 # Multi-stage build for Anki Sync Server - Optimized
-FROM python:3.11-slim as builder
+FROM python:3.10-slim as builder
 
 # Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -7,51 +7,42 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Install minimal build dependencies
+# Install build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
-    g++ \
-    && rm -rf /var/lib/apt/lists/* \
-    && apt-get autoremove -y \
-    && apt-get autoclean
-
-# Create virtual environment
-RUN python -m venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
 
 # Create app directory
 WORKDIR /app
 
-# Install Python dependencies in builder
+# Copy and install Python dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --user -r requirements.txt
 
-# Copy and install source code
-COPY src /app/src
+# Copy only the necessary source files (excluding collections)
+COPY src/ankisyncd /app/src/ankisyncd
+COPY src/ankisyncd_cli /app/src/ankisyncd_cli
+COPY src/ankisyncd.conf /app/src/ankisyncd.conf
+COPY src/setup.py /app/src/setup.py
+
+# Install the package
 WORKDIR /app/src
-RUN pip install --no-cache-dir -e .
+RUN pip install --user .
 
-# Production stage
-FROM python:3.11-slim as production
+# Production stage  
+FROM python:3.10-slim as production
 
 # Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python \
-    PATH="/opt/venv/bin:$PATH"
-
-# Install only essential runtime dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/* \
-    && apt-get autoremove -y \
-    && apt-get autoclean
+    PATH=/root/.local/bin:$PATH
 
 # Create non-root user
 RUN groupadd -g 1000 anki && useradd -u 1000 -g anki -m anki
 
-# Copy virtual environment from builder
-COPY --from=builder /opt/venv /opt/venv
+# Copy Python packages from builder
+COPY --from=builder /root/.local /root/.local
 
 # Copy application files
 COPY --from=builder /app/src/ankisyncd /app/ankisyncd
@@ -75,7 +66,7 @@ USER anki
 # Expose port
 EXPOSE 27702
 
-# Health check using basic Python instead of requests
+# Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:27702/').read()" || exit 1
 
