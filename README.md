@@ -370,6 +370,76 @@ docker stats anki-nginx-proxy anki-sync-server-nginx
 
 ---
 
+## 🐛 Troubleshooting & Debugging
+
+### Client Authentication Debugging
+
+**Symptoms:**
+- Anki client sends empty request bodies (`Content-Length: ''`)
+- Server receives `{}` instead of credentials
+- Perfect headers but no authentication data
+
+**Root Cause:** Usually credential collection issues in Anki desktop client, not the sync protocol.
+
+**Debug Steps:**
+1. **Verify Client Configuration** - Check custom sync server URL in Anki preferences
+2. **Test Login Dialog** - Ensure dialog appears and captures input properly
+3. **Try Different Formats** - Test with both username and email authentication
+4. **Check SSL Certificates** - Self-signed certificates may be rejected
+5. **Alternative Clients** - Test with AnkiDroid/AnkiMobile to isolate desktop issues
+
+**Testing Commands:**
+```bash
+# Test HTTP authentication
+curl -X POST -H "Content-Type: application/json" \
+  -H "anki-sync: {\"v\":11,\"k\":\"\",\"c\":\"test\",\"s\":\"test\"}" \
+  -d '{"u":"test","p":"test123"}' \
+  http://127.0.0.1:27702/sync/hostKey
+
+# Test server health
+curl -I http://localhost:27702/sync/hostKey
+curl -I https://localhost:27703/sync/hostKey
+```
+
+**Server Status Verification:**
+```bash
+# Check processes
+ps aux | grep ankisyncd
+ps aux | grep https_proxy
+
+# Monitor authentication
+docker logs anki-sync-server-nginx 2>&1 | grep -E "(Authentication|SUCCESS|ERROR)"
+```
+
+### Common Error Patterns & Solutions
+
+| Error | Cause | Solution |
+|-------|-------|----------|
+| `Exception: expected auth` | Discovery request not returning HTTP 400 | Update authentication flow in `sync_app.py` |
+| `missing original_size` | Missing `anki-original-size` header | Ensure all responses return `(body, size)` tuples |
+| `Authentication failed for nonexistent user` | User not in database | Create user with proper collection path |
+| `30-second timeout` | Blocking read on chunked requests | Implement non-blocking chunked parsing |
+| `no such table: auth` | Database not initialized | Auto-create database schema on startup |
+| `error sending request for url ()` | Self-signed certificate rejected | Use proper SSL certificate or add to trust store |
+| `AttributeError: 'SyncUserSession' object has no attribute 'username'` | Code accessing wrong attribute | Replace `session.username` with `session.name` |
+| `HTTPS Proxy Can't Connect` | Service name mismatch | Check `SYNC_SERVER_URL` points to correct container |
+
+### Quick Recovery Commands
+```bash
+# Stop everything and rebuild
+docker-compose down
+docker-compose -f docker-compose.nginx.yml up --build -d
+
+# Check container status
+docker ps
+docker logs anki-sync-server-nginx --tail 10
+docker logs anki-nginx-proxy --tail 10
+
+# Test connectivity
+curl http://localhost:27702/sync/hostKey
+curl -k https://localhost:27703/sync/hostKey
+```
+
 ## 🚨 Critical Deployment Tips
 
 ### Modern Anki Client Compatibility (v25.02+)
@@ -466,6 +536,72 @@ docker-compose down && docker-compose up -d
 | `30-second timeout` | Blocking read on chunked requests | Implement non-blocking chunked parsing |
 | `no such table: auth` | Database not initialized | Auto-create database schema on startup |
 | `error sending request for url ()` | Self-signed certificate rejected by client | Use proper SSL certificate or add to system trust store |
+
+## 📋 Production Deployment Insights
+
+### Key Issues & Optimizations
+
+**Collection Storage Path Issues:**
+- **Problem**: Volume mount incorrect (`/data/collections` vs `/app/collections`)
+- **Fix**: Updated volume mapping to `./data/collections:/app/collections`
+- **Impact**: Collections now properly accessible on host machine
+
+**SSL Certificate Validation:**
+- **Problem**: Modern Anki clients reject self-signed certificates
+- **Root Cause**: `reqwest` library strictly validates SSL certificates
+- **Solution**: Automatic Let's Encrypt certificate generation for production
+- **Fallback**: Self-signed certificates with system trust store addition
+
+**Environment Variable Management:**
+- **Added Variables**: `DOMAIN_NAME`, `EMAIL`, `ANKI_SYNC_SERVER_HOST/PORT`, `HTTPS_CERT_PATH`
+- **Fix**: Comprehensive environment variable support throughout codebase
+
+### Deployment Automation
+
+**AWS Deployment Script**: `scripts/aws-deploy.sh` for one-command deployment
+**Environment Template**: `.env.production.example` for easy configuration
+**DNS Validation**: Automatic domain resolution checking
+**Fallback Strategy**: Self-signed certificates if Let's Encrypt fails
+
+### Security Improvements
+
+- **SSL/TLS**: Modern cipher suites and TLS 1.2+ enforcement
+- **Certificate Priority**: Let's Encrypt preferred, self-signed as fallback
+- **HTTP Challenge**: Built-in support for Let's Encrypt HTTP-01 validation
+
+### Data Flow Architecture
+```
+Anki Client → HTTPS Proxy (27703) → Sync Server (27702)
+                    ↓
+              Certificate Files
+                    ↓
+              Let's Encrypt/Self-signed
+```
+
+### Storage Layout
+```
+data/
+├── collections/
+│   ├── auth.db                    # User authentication
+│   └── users/
+│       └── user@example.com/      # User collections
+certs/
+├── domain.crt                     # Let's Encrypt certificate
+├── domain.key                     # Private key
+└── localhost+3.pem               # Fallback self-signed
+```
+
+### Performance Considerations
+
+**Resource Requirements:**
+- **Minimum**: 1GB RAM, 1 CPU core, 10GB storage
+- **Recommended**: 2GB RAM, 2 CPU cores, 50GB storage
+- **Scaling**: Horizontal scaling possible with shared storage
+
+**Optimization Opportunities:**
+- **Database**: SQLite WAL mode for better concurrency
+- **Caching**: Media file caching for faster transfers
+- **Compression**: Zstd compression reduces bandwidth usage
 
 ## 🔧 Production Configuration
 
