@@ -40,9 +40,15 @@ services:
       - PYTHONPATH=/app/src
     volumes:
       - ./src:/app/src
-      - ./data:/data
+      - ./data:/data:rw
       - ./config:/app/config
     restart: unless-stopped
+    command: >
+      sh -c "
+        mkdir -p /data/collections &&
+        chown -R 1000:1000 /data &&
+        exec python -m ankisyncd
+      "
     healthcheck:
       test: ["CMD", "python", "-c", "import socket; s=socket.socket(); s.connect(('localhost', 27702)); s.close()"]
       interval: 30s
@@ -98,7 +104,7 @@ services:
       - ./letsencrypt:/etc/letsencrypt:rw
       - ./certbot-www:/var/www/certbot:rw
       - ./logs/certbot:/var/log/letsencrypt
-    command: certonly --webroot --webroot-path=/var/www/certbot --email your-email@example.com --agree-tos --no-eff-email -d sync.ankipi.com
+    command: certonly --webroot --webroot-path=/var/www/certbot --email jackymcgrady@gmail.com --agree-tos --no-eff-email -d sync.ankipi.com
     profiles:
       - certbot
     networks:

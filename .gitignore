@@ -356,6 +356,9 @@ certs/
 data/
 logs/
 
+# Ignore Let's Encrypt certificates and configuration
+letsencrypt/
+
 # Do not ignore example or template files
 !env.production.example
 !env.cognito.example
