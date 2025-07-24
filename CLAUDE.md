@@ -9,3 +9,6 @@
 
 ## Development Philosophy
 - Never ask me to downgrade the client to meet traditional server, as I'm taking this server online to meet modern anki users.
+
+## Debugging
+- When debugging becomes difficult, refer to Anki_Client_Code folder to look for client behavior and expectations.

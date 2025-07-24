@@ -369,3 +369,6 @@ test_*.py
 
 # Ignore config files with real credentials
 src/ankisyncd.cognito.conf
+
+# Anki client code for reference (not tracked)
+Anki_Client_Code/
