@@ -5,18 +5,20 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: anki-sync-server-nginx
-    user: "1000:1000"
+    user: "${CONTAINER_USER_ID:-1000}:${CONTAINER_GROUP_ID:-1000}"
     deploy:
       resources:
         limits:
-          memory: 512M
-          cpus: '1.0'
+          memory: ${MEMORY_LIMIT:-512M}
+          cpus: '${CPU_LIMIT:-1.0}'
         reservations:
-          memory: 256M
-          cpus: '0.5'
+          memory: ${MEMORY_RESERVATION:-256M}
+          cpus: '${CPU_RESERVATION:-0.5}'
     environment:
+      # User Manager Configuration
+      - ANKISYNCD_USER_MANAGER=${ANKISYNCD_USER_MANAGER:-ankisyncd.users.cognito_manager.CognitoUserManager}
+      
       # AWS Cognito Configuration - Use environment variables for security
-      - ANKISYNCD_USER_MANAGER=ankisyncd.users.cognito_manager.CognitoUserManager
       - ANKISYNCD_COGNITO_USER_POOL_ID=${ANKISYNCD_COGNITO_USER_POOL_ID}
       - ANKISYNCD_COGNITO_CLIENT_ID=${ANKISYNCD_COGNITO_CLIENT_ID}
       - ANKISYNCD_COGNITO_CLIENT_SECRET=${ANKISYNCD_COGNITO_CLIENT_SECRET}
@@ -28,13 +30,13 @@ services:
       - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-ap-southeast-1}
       
       # Server Configuration
-      - ANKISYNCD_HOST=0.0.0.0
-      - ANKISYNCD_PORT=27702
-      - ANKISYNCD_DATA_ROOT=/data/collections
-      - ANKISYNCD_BASE_URL=/sync/
-      - ANKISYNCD_BASE_MEDIA_URL=/msync/
-      - ANKISYNCD_SESSION_DB_PATH=/data/session.db
-      - ANKISYNCD_AUTH_DB_PATH=
+      - ANKISYNCD_HOST=${ANKISYNCD_HOST:-0.0.0.0}
+      - ANKISYNCD_PORT=${ANKISYNCD_PORT:-27702}
+      - ANKISYNCD_DATA_ROOT=${ANKISYNCD_DATA_ROOT:-/data/collections}
+      - ANKISYNCD_BASE_URL=${ANKISYNCD_BASE_URL:-/sync/}
+      - ANKISYNCD_BASE_MEDIA_URL=${ANKISYNCD_BASE_MEDIA_URL:-/msync/}
+      - ANKISYNCD_SESSION_DB_PATH=${ANKISYNCD_SESSION_DB_PATH:-/data/session.db}
+      - ANKISYNCD_AUTH_DB_PATH=${ANKISYNCD_AUTH_DB_PATH:-}
       
       # Python path for development
       - PYTHONPATH=/app/src
@@ -83,7 +85,19 @@ services:
       # nginx logs
       - ./logs/nginx:/var/log/nginx
     environment:
-      - DOMAIN_NAME=sync.ankipi.com
+      # Domain and SSL Configuration
+      - DOMAIN_NAME=${DOMAIN_NAME:-localhost}
+      - SSL_MODE=${SSL_MODE:-self-signed}
+      - DEV_MODE=${DEV_MODE:-false}
+      - EMAIL=${EMAIL:-dev@localhost}
+      
+      # Nginx Proxy Configuration
+      - ANKI_SYNC_SERVER_HOST=${ANKI_SYNC_SERVER_HOST:-anki-sync-server-nginx}
+      - ANKI_SYNC_SERVER_PORT=${ANKI_SYNC_SERVER_PORT:-27702}
+      - MAX_BODY_SIZE=${MAX_BODY_SIZE:-2G}
+      - PROXY_CONNECT_TIMEOUT=${PROXY_CONNECT_TIMEOUT:-60s}
+      - PROXY_SEND_TIMEOUT=${PROXY_SEND_TIMEOUT:-300s}
+      - PROXY_READ_TIMEOUT=${PROXY_READ_TIMEOUT:-300s}
     depends_on:
       - anki-sync-server
     restart: unless-stopped
@@ -104,7 +118,7 @@ services:
       - ./letsencrypt:/etc/letsencrypt:rw
       - ./certbot-www:/var/www/certbot:rw
       - ./logs/certbot:/var/log/letsencrypt
-    command: certonly --webroot --webroot-path=/var/www/certbot --email jackymcgrady@gmail.com --agree-tos --no-eff-email -d sync.ankipi.com
+    command: certonly --webroot --webroot-path=/var/www/certbot --email ${EMAIL:-dev@localhost} --agree-tos --no-eff-email -d ${DOMAIN_NAME:-localhost}
     profiles:
       - certbot
     networks:

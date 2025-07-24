@@ -6,3 +6,6 @@
 - Uses nginx for HTTPS proxy (as a container, part of the docker compose)
 - Configured to authenticate users using AWS Cognito
 - Recommendation: Understand the README.md first before diving into the project details
+
+## Development Philosophy
+- Never ask me to downgrade the client to meet traditional server, as I'm taking this server online to meet modern anki users.

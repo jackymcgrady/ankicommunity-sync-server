@@ -109,5 +109,13 @@ yarn-error.log
 .github/
 
 # Scripts that shouldn't be in container
-scripts/
+scripts/aws-deploy.sh
+scripts/docker-deploy.sh
+scripts/docker-dev.sh
+scripts/jupyter.sh
+scripts/poetry-*.sh
+scripts/printenv.sh
+scripts/release-*.sh
+scripts/setup-https-certs.sh
+scripts/setup-nginx-ssl.sh
 Makefile 
