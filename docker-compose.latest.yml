@@ -43,7 +43,6 @@ services:
     volumes:
       - ./src:/app/src
       - ./data:/data:rw
-      - ./config:/app/config
     restart: unless-stopped
     command: >
       sh -c "
