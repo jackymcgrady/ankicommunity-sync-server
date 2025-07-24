@@ -6,11 +6,11 @@ If you manage multiple Anki clients (desktop, mobile, web) and need a **secure a
 ## ✅ Production Status
 
 **WORKING FEATURES:**
-- ✅ **HTTPS connectivity** via `https://sync.ankipi.com`
+- ✅ **HTTPS connectivity** with automatic SSL certificates
 - ✅ **AWS Cognito authentication** with username-based collection folders
 - ✅ **Fast media sync** - thousands of files sync swiftly
 - ✅ **Modern Anki client compatibility** (v25.02+)
-- ✅ **Docker deployment** with automatic SSL/TLS termination
+- ✅ **Docker deployment** with nginx reverse proxy and SSL/TLS termination
 
 ## 🚀 Quick Start
 
@@ -21,13 +21,13 @@ cp .env.example .env
 # Edit .env with your AWS credentials and Cognito settings
 
 # 2. Deploy with secure environment variables
-docker-compose -f docker-compose.nginx.yml up -d
+docker-compose -f docker-compose.latest.yml up -d
 
 # 3. Verify services are running
-docker-compose -f docker-compose.nginx.yml ps
+docker-compose -f docker-compose.latest.yml ps
 
 # 4. Users authenticate via Cognito - no manual user creation needed
-# Connect Anki to: https://sync.ankipi.com
+# Connect Anki to: https://your-domain.com
 ```
 
 ### ⚠️ SECURITY SETUP REQUIRED
@@ -39,12 +39,14 @@ AWS_SECRET_ACCESS_KEY=your_secret_key_here
 ANKISYNCD_COGNITO_USER_POOL_ID=your_user_pool_id
 ANKISYNCD_COGNITO_CLIENT_ID=your_client_id
 ANKISYNCD_COGNITO_CLIENT_SECRET=your_client_secret
+DOMAIN_NAME=your-domain.com
+EMAIL=your-email@example.com
 ```
 
 ### Local Development
 ```bash
 # Clone and configure
-git clone https://github.com/jackymcgrady/ankicommunity-sync-server.git
+git clone https://github.com/your-username/ankicommunity-sync-server.git
 cd ankicommunity-sync-server
 
 # Setup environment variables
@@ -52,16 +54,16 @@ cp .env.example .env
 # Edit .env with your credentials
 
 # Start with secure configuration
-docker-compose -f docker-compose.nginx.yml up -d
+docker-compose -f docker-compose.latest.yml up -d
 
-# Connect Anki to: https://sync.ankipi.com
+# Connect Anki to: https://your-domain.com
 ```
 
 ---
 
 ## The User Story
 1. **Edit Anywhere** – Study on your phone during the commute, then refine cards on your laptop at night.
-2. **Hit *Sync*** – Each client contacts the same endpoint (`/sync`) over HTTP and authenticates with your credentials.
+2. **Hit *Sync*** – Each client contacts the same endpoint (`/sync`) over HTTPS and authenticates with your credentials.
 3. **See Magic** – The server reconciles review logs, note edits, card scheduling, and media additions so every device looks identical the next time you open Anki.
 
 Behind that *Sync* button lives a carefully orchestrated sequence of database merges, conflict resolution, and media transfers—performed safely, atomically, and as fast as possible.
@@ -85,7 +87,6 @@ Behind that *Sync* button lives a carefully orchestrated sequence of database me
 | `collection/` | SQLite collection wrapper with schema upgrades |
 | `media_manager.py` | Deduplicates, normalizes, and streams media files |
 | `users/cognito_manager.py` | **AWS Cognito authentication** with username-based collections |
-| `https_proxy.py` | **Custom HTTPS proxy** with SSL termination and Anki protocol optimization |
 
 Each component is **loosely coupled** for easy customization and monitoring integration.
 
@@ -126,18 +127,20 @@ Copy `.env.example` to `.env` and configure:
 | `ANKISYNCD_COGNITO_CLIENT_ID` | Cognito App client ID | ✅ Required |
 | `ANKISYNCD_COGNITO_CLIENT_SECRET` | Cognito client secret | ✅ Required |
 | `ANKISYNCD_COGNITO_REGION` | AWS region | ✅ Required |
+| `DOMAIN_NAME` | Your domain for SSL certificates | ✅ Required |
+| `EMAIL` | Email for Let's Encrypt | ✅ Required |
 
 ### Optional Configuration
 | Env Var | Purpose | Default |
 | ------- | ------- | ------- |
-| `DOMAIN_NAME` | Your domain for SSL certificates | `sync.ankipi.com` |
-| `EMAIL` | Email for Let's Encrypt | Required for SSL |
 | `AWS_DEFAULT_REGION` | AWS region fallback | `ap-southeast-1` |
+| `SSL_MODE` | SSL certificate mode | `letsencrypt` |
+| `DEV_MODE` | Development mode | `false` |
 
 ### Quick Setup Commands
 ```bash
 # 1. Clone and configure
-git clone https://github.com/jackymcgrady/ankicommunity-sync-server.git
+git clone https://github.com/your-username/ankicommunity-sync-server.git
 cd ankicommunity-sync-server
 
 # 2. Setup environment (REQUIRED)
@@ -145,7 +148,7 @@ cp .env.example .env
 nano .env  # Add your AWS/Cognito credentials
 
 # 3. Deploy
-docker-compose -f docker-compose.nginx.yml up -d
+docker-compose -f docker-compose.latest.yml up -d
 
 # 4. Verify
 docker ps  # Should show both containers running
@@ -185,11 +188,13 @@ curl -k https://localhost/sync/hostKey  # Test endpoint
 **Certificate Management**:
 ```bash
 # Automatic Let's Encrypt certificates
-./scripts/setup-nginx-ssl.sh  # Initial setup
-./renew-certs.sh              # Renewal (add to crontab)
+./scripts/setup-https-certs.sh letsencrypt
 
 # Self-signed fallback for development
-docker-compose -f docker-compose.nginx.yml up -d
+./scripts/setup-https-certs.sh self-signed
+
+# Certificate info
+./scripts/setup-https-certs.sh info
 ```
 
 **AWS Cognito Integration**:
@@ -224,7 +229,7 @@ ANKISYNCD_COGNITO_CLIENT_SECRET=your_client_secret
 ### Collection Directory Structure
 When users authenticate, collections are automatically organized by Cognito username:
 ```
-/app/collections/users/
+/data/collections/users/
 ├── john.doe/           # Cognito username (not email)
 │   ├── collection.anki2
 │   └── collection.media/
@@ -235,76 +240,10 @@ When users authenticate, collections are automatically organized by Cognito user
 
 ---
 
-## ⚠️ Common Deployment Issues & Solutions
-
-### 1. AttributeError: 'SyncUserSession' object has no attribute 'username'
-**Symptom:** Sync fails with this error even though connection is successful.
-**Cause:** Code tries to access `session.username` but should use `session.name`.
-**Solution:** Replace all instances of `session.username` with `session.name` in sync_app.py.
-
-### 2. HTTPS Proxy Can't Connect to Sync Server
-**Symptom:** Proxy logs show "Name or service not known" errors.
-**Cause:** Service name mismatch between Docker containers.
-**Solution:** 
-- Ensure SYNC_SERVER_URL environment variable points to correct container name
-- For Cognito setup: `http://anki-sync-server-cognito:27702`
-- Rebuild containers after changing environment variables
-
-### 3. HTTPS Proxy Not Starting
-**Symptom:** Only sync server starts, no proxy container.
-**Cause:** Docker Compose profiles not activated.
-**Solution:** Use `--profile https` flag:
-```bash
-docker-compose -f docker-compose.yml -f docker-compose.cognito.yml --profile https up -d
-```
-
-### 4. CognitoUserManager Initialization Error
-**Symptom:** `TypeError: CognitoUserManager.__init__() takes 2 positional arguments but 3 were given`
-**Cause:** Mismatch between expected constructor signature and usage.
-**Solution:** Pass only config dict to CognitoUserManager:
-```python
-# Wrong:
-return CognitoUserManager(config.get("data_root"), cognito_config)
-# Correct:
-return CognitoUserManager(config)
-```
-
-### 5. Protobuf Compatibility Issues
-**Symptom:** `ImportError: cannot import name 'runtime_version' from 'google.protobuf'`
-**Cause:** Version mismatch between Anki and protobuf packages.
-**Solution:** Pin compatible versions in requirements.txt:
-```
-anki==24.4.1
-protobuf>=4.21,<5
-```
-
-### 6. Server Accessible but Can't Login via Domain
-**Symptom:** Direct access works (`http://localhost:27702`) but domain fails.
-**Cause:** Multiple issues - container networking, proxy configuration, DNS.
-**Debug Steps:**
-1. Check both containers are running: `docker ps`
-2. Verify proxy logs: `docker logs anki-https-proxy-cognito`
-3. Test direct access: `curl http://localhost:27702/sync/hostKey`
-4. Check DNS resolution of your domain
-
-### Quick Recovery Commands
-```bash
-# Stop everything and rebuild with fixes
-docker-compose down
-docker-compose -f docker-compose.yml -f docker-compose.cognito.yml --profile https up --build -d
-
-# Check status
-docker ps
-docker logs anki-sync-server-cognito --tail 10
-docker logs anki-https-proxy-cognito --tail 10
-```
-
----
-
 ## 🐳 Docker Deployment
 
 ### nginx-based Production Setup (Recommended)
-**Image Size**: Optimized to **244MB** (production setup ~345MB total)
+**Image Size**: Optimized production setup
 
 ```bash
 # 1. Configure environment variables (REQUIRED)
@@ -312,23 +251,17 @@ cp .env.example .env
 nano .env  # Add your AWS credentials and Cognito settings
 
 # 2. Deploy with secure configuration
-docker-compose -f docker-compose.nginx.yml up -d
+docker-compose -f docker-compose.latest.yml up -d
 
 # 3. Verify services are running
-docker-compose -f docker-compose.nginx.yml ps
+docker-compose -f docker-compose.latest.yml ps
 # Should show:
-# - anki-nginx-proxy (119MB, ports 80:80, 443:443)  
-# - anki-sync-server-nginx (226MB, internal port 27702)
+# - anki-nginx-proxy (ports 80:80, 443:443)  
+# - anki-sync-server (internal port 27702)
 ```
-
-### Docker Compose Files Available
-- `docker-compose.nginx.yml` - **Recommended**: nginx + SSL (345MB total, secure env vars)
-- `docker-compose.cognito.yml` - Alternative: Custom HTTPS proxy (secure env vars)  
-- `docker-compose.yml` - Base development configuration
 
 ### Security Features
 - **Environment Variables**: All credentials use secure env vars (never committed)
-- **Optimized Images**: 71% size reduction (856MB → 244MB)
 - **Non-root Containers**: Enhanced security with dedicated user accounts
 - **SSL/TLS**: Production-grade HTTPS with nginx reverse proxy
 
@@ -336,11 +269,11 @@ docker-compose -f docker-compose.nginx.yml ps
 
 ```bash
 # Production deployment with nginx + SSL
-docker-compose -f docker-compose.nginx.yml up -d
+docker-compose -f docker-compose.latest.yml up -d
 
 # View logs
-docker-compose -f docker-compose.nginx.yml logs -f nginx
-docker-compose -f docker-compose.nginx.yml logs -f anki-sync-server
+docker-compose -f docker-compose.latest.yml logs -f nginx
+docker-compose -f docker-compose.latest.yml logs -f anki-sync-server
 
 # Monitor sync activity
 docker logs anki-sync-server-nginx 2>&1 | grep -E "(Authentication|SUCCESS|ERROR)"
@@ -351,11 +284,8 @@ docker exec anki-nginx-proxy tail -f /var/log/nginx/access.log
 # Container shell access
 docker exec -it anki-sync-server-nginx bash
 
-# SSL certificate renewal
-./renew-certs.sh
-
 # Stop services
-docker-compose -f docker-compose.nginx.yml down
+docker-compose -f docker-compose.latest.yml down
 ```
 
 ### Volume Mounts (Critical for Data Persistence)
@@ -385,85 +315,67 @@ AWS Cognito User Pool
 ./data/collections/users/{cognito_username}/
 ```
 
-### Health Monitoring & SSL Management
+---
+
+## 🔧 Scripts and Deployment Automation
+
+The project includes several deployment and management scripts:
+
+### Available Scripts
+- **`scripts/aws-deploy.sh`** - Full AWS deployment with SSL certificates
+- **`scripts/docker-deploy.sh`** - Production deployment with registry management
+- **`scripts/docker-dev.sh`** - Development environment management
+- **`scripts/generate-nginx-config.sh`** - Dynamic nginx configuration generation
+- **`scripts/setup-https-certs.sh`** - SSL certificate management (Let's Encrypt, self-signed, custom)
+
+### Usage Examples
 ```bash
-# Check container health
-docker-compose -f docker-compose.nginx.yml ps
+# Generate SSL certificates
+./scripts/setup-https-certs.sh letsencrypt
+./scripts/setup-https-certs.sh self-signed
 
-# Monitor nginx access logs
-docker exec anki-nginx-proxy tail -f /var/log/nginx/access.log
+# Development environment
+./scripts/docker-dev.sh build
+./scripts/docker-dev.sh up
 
-# Check SSL certificate status
-docker exec anki-nginx-proxy openssl x509 -in /etc/letsencrypt/live/sync.ankipi.com/fullchain.pem -text -noout | grep -E "(Subject|Not After)"
-
-# Renew SSL certificates (setup as cron job)
-0 12 * * * cd /path/to/project && ./renew-certs.sh
-
-# Monitor resource usage
-docker stats anki-nginx-proxy anki-sync-server-nginx
+# Production deployment
+./scripts/docker-deploy.sh production latest
 ```
 
 ---
 
 ## 🐛 Troubleshooting & Debugging
 
-### Client Authentication Debugging
+### Modern Anki Client Compatibility (v25.02+)
 
-**Symptoms:**
-- Anki client sends empty request bodies (`Content-Length: ''`)
-- Server receives `{}` instead of credentials
-- Perfect headers but no authentication data
+**Key Fixes Implemented:**
 
-**Root Cause:** Usually credential collection issues in Anki desktop client, not the sync protocol.
+#### 1. Authentication Flow Issues
+- **Issue**: Client discovery requests weren't triggering authentication dialogs
+- **Fix**: Return HTTP 400 "expected auth" for discovery requests (`{"k": ""}` with empty body)
 
-**Debug Steps:**
-1. **Verify Client Configuration** - Check custom sync server URL in Anki preferences
-2. **Test Login Dialog** - Ensure dialog appears and captures input properly
-3. **Try Different Formats** - Test with both username and email authentication
-4. **Check SSL Certificates** - Self-signed certificates may be rejected
-5. **Alternative Clients** - Test with AnkiDroid/AnkiMobile to isolate desktop issues
+#### 2. Missing anki-original-size Header
+- **Issue**: All zstd-compressed responses must include `anki-original-size` header with uncompressed byte count
+- **Fix**: Updated response handling to include proper size headers
 
-**Testing Commands:**
-```bash
-# Test HTTP authentication
-curl -X POST -H "Content-Type: application/json" \
-  -H "anki-sync: {\"v\":11,\"k\":\"\",\"c\":\"test\",\"s\":\"test\"}" \
-  -d '{"u":"test","p":"test123"}' \
-  http://127.0.0.1:27702/sync/hostKey
-
-# Test server health
-curl -I http://localhost:27702/sync/hostKey
-curl -I https://localhost:27703/sync/hostKey
-```
-
-**Server Status Verification:**
-```bash
-# Check processes
-ps aux | grep ankisyncd
-ps aux | grep https_proxy
-
-# Monitor authentication
-docker logs anki-sync-server-nginx 2>&1 | grep -E "(Authentication|SUCCESS|ERROR)"
-```
+#### 3. Request Body Parsing for Streaming Clients
+- **Issue**: Modern clients stream request bodies without `Content-Length` headers using chunked transfer encoding
+- **Fix**: Enhanced request parsing to handle chunked transfer encoding and missing content-length headers
 
 ### Common Error Patterns & Solutions
 
 | Error | Cause | Solution |
 |-------|-------|----------|
 | `Exception: expected auth` | Discovery request not returning HTTP 400 | Update authentication flow in `sync_app.py` |
-| `missing original_size` | Missing `anki-original-size` header | Ensure all responses return `(body, size)` tuples |
-| `Authentication failed for nonexistent user` | User not in database | Create user with proper collection path |
-| `30-second timeout` | Blocking read on chunked requests | Implement non-blocking chunked parsing |
-| `no such table: auth` | Database not initialized | Auto-create database schema on startup |
-| `error sending request for url ()` | Self-signed certificate rejected | Use proper SSL certificate or add to trust store |
-| `AttributeError: 'SyncUserSession' object has no attribute 'username'` | Code accessing wrong attribute | Replace `session.username` with `session.name` |
-| `HTTPS Proxy Can't Connect` | Service name mismatch | Check `SYNC_SERVER_URL` points to correct container |
+| `missing original_size` | Missing `anki-original-size` header | Ensure all responses return proper size headers |
+| `Authentication failed` | User not in Cognito | Verify AWS Cognito configuration |
+| `SSL certificate error` | Self-signed certificate rejected | Use Let's Encrypt or add cert to trust store |
 
 ### Quick Recovery Commands
 ```bash
 # Stop everything and rebuild
-docker-compose down
-docker-compose -f docker-compose.nginx.yml up --build -d
+docker-compose -f docker-compose.latest.yml down
+docker-compose -f docker-compose.latest.yml up --build -d
 
 # Check container status
 docker ps
@@ -471,236 +383,8 @@ docker logs anki-sync-server-nginx --tail 10
 docker logs anki-nginx-proxy --tail 10
 
 # Test connectivity
-curl http://localhost:27702/sync/hostKey
-curl -k https://localhost:27703/sync/hostKey
+curl -k https://localhost/sync/hostKey
 ```
-
-## 🚨 Critical Deployment Tips
-
-### Modern Anki Client Compatibility (v25.02+)
-
-**Problem**: Modern Anki clients (v25.02+) failed with "Exception: expected auth" and "missing original_size" errors.
-
-**Root Causes & Solutions**:
-
-#### 1. Authentication Flow Issues
-- **Issue**: Client discovery requests weren't triggering authentication dialogs
-- **Fix**: Return HTTP 400 "expected auth" for discovery requests (`{"k": ""}` with empty body)
-- **Code**: Modified `sync_app.py` authentication handling to properly signal auth requirement
-
-#### 2. Missing anki-original-size Header
-- **Issue**: All zstd-compressed responses must include `anki-original-size` header with uncompressed byte count
-- **Fix**: Updated `chunked` decorator to handle `(body, original_size)` tuples and set headers
-- **Impact**: Critical for media sync operations and all compressed responses
-
-#### 3. Request Body Parsing for Streaming Clients
-- **Issue**: Modern clients stream request bodies without `Content-Length` headers using chunked transfer encoding
-- **Fix**: Enhanced `get_body_data()` to handle:
-  - Missing/empty `Content-Length` headers
-  - Manual chunked transfer decoding when WSGI lacks support
-  - Non-blocking reads to prevent 30-second timeouts
-- **Code**: Added chunked parsing logic in `sync_app.py`
-
-#### 4. Media Sync Response Format
-- **Issue**: Media operations returned inconsistent response formats
-- **Fix**: All media sync responses now return `(payload, original_size)` tuples:
-  - JSON responses: zstd-compressed with size header
-  - Binary downloads: raw data with size header
-- **Impact**: Eliminates "missing original size" errors during media sync
-
-#### 5. Database Initialization
-- **Issue**: Server crashed with "no such table: auth" on fresh deployments
-- **Fix**: Auto-create auth database and tables on startup if missing
-- **Code**: Enhanced `sqlite_manager.py` initialization
-
-### Essential Configuration
-
-```bash
-# User Management - Create persistent auth database (Production)
-docker exec anki-sync-server-prod python -c "
-from ankisyncd.users.sqlite_manager import SqliteUserManager
-mgr = SqliteUserManager('/app/collections/auth.db', '/app/collections')
-mgr.add_user('your-email@example.com', 'your-password')
-print('User added successfully')
-"
-
-# Verify user authentication (Production)
-docker exec anki-sync-server-prod python -c "
-from ankisyncd.users.sqlite_manager import SqliteUserManager
-mgr = SqliteUserManager('/app/collections/auth.db', '/app/collections')
-result = mgr.authenticate('your-email@example.com', 'your-password')
-print('Auth test:', result)
-"
-```
-
-### Persistent Data Setup
-
-```bash
-# Create persistent data directory
-mkdir -p /opt/anki-sync-server/data
-
-# Docker compose override for persistence
-cat > docker-compose.override.yml << 'EOF'
-version: '3.8'
-services:
-  anki-sync-server:
-    volumes:
-      - ./data:/data
-EOF
-
-# Restart with persistent storage
-docker-compose down && docker-compose up -d
-```
-
-### Deployment Checklist
-
-1. **✅ HTTPS Setup**: Modern clients require HTTPS in production
-2. **✅ Persistent Storage**: Mount `/data` volume to preserve users/collections
-3. **✅ User Creation**: Add users with proper collection path parameter
-4. **✅ Container Health**: Verify container starts without auth table errors
-5. **✅ Client Testing**: Test full sync cycle including media files
-6. **✅ Log Monitoring**: Watch for authentication and sync success messages
-
-### Common Error Patterns
-
-| Error | Cause | Solution |
-|-------|-------|----------|
-| `Exception: expected auth` | Discovery request not returning HTTP 400 | Update authentication flow in `sync_app.py` |
-| `missing original_size` | Missing `anki-original-size` header | Ensure all responses return `(body, size)` tuples |
-| `Authentication failed for nonexistent user` | User not in database | Create user with proper collection path |
-| `30-second timeout` | Blocking read on chunked requests | Implement non-blocking chunked parsing |
-| `no such table: auth` | Database not initialized | Auto-create database schema on startup |
-| `error sending request for url ()` | Self-signed certificate rejected by client | Use proper SSL certificate or add to system trust store |
-
-## 📋 Production Deployment Insights
-
-### Key Issues & Optimizations
-
-**Collection Storage Path Issues:**
-- **Problem**: Volume mount incorrect (`/data/collections` vs `/app/collections`)
-- **Fix**: Updated volume mapping to `./data/collections:/app/collections`
-- **Impact**: Collections now properly accessible on host machine
-
-**SSL Certificate Validation:**
-- **Problem**: Modern Anki clients reject self-signed certificates
-- **Root Cause**: `reqwest` library strictly validates SSL certificates
-- **Solution**: Automatic Let's Encrypt certificate generation for production
-- **Fallback**: Self-signed certificates with system trust store addition
-
-**Environment Variable Management:**
-- **Added Variables**: `DOMAIN_NAME`, `EMAIL`, `ANKI_SYNC_SERVER_HOST/PORT`, `HTTPS_CERT_PATH`
-- **Fix**: Comprehensive environment variable support throughout codebase
-
-### Deployment Automation
-
-**AWS Deployment Script**: `scripts/aws-deploy.sh` for one-command deployment
-**Environment Template**: `.env.production.example` for easy configuration
-**DNS Validation**: Automatic domain resolution checking
-**Fallback Strategy**: Self-signed certificates if Let's Encrypt fails
-
-### Security Improvements
-
-- **SSL/TLS**: Modern cipher suites and TLS 1.2+ enforcement
-- **Certificate Priority**: Let's Encrypt preferred, self-signed as fallback
-- **HTTP Challenge**: Built-in support for Let's Encrypt HTTP-01 validation
-
-### Data Flow Architecture
-```
-Anki Client → HTTPS Proxy (27703) → Sync Server (27702)
-                    ↓
-              Certificate Files
-                    ↓
-              Let's Encrypt/Self-signed
-```
-
-### Storage Layout
-```
-data/
-├── collections/
-│   ├── auth.db                    # User authentication
-│   └── users/
-│       └── user@example.com/      # User collections
-certs/
-├── domain.crt                     # Let's Encrypt certificate
-├── domain.key                     # Private key
-└── localhost+3.pem               # Fallback self-signed
-```
-
-### Performance Considerations
-
-**Resource Requirements:**
-- **Minimum**: 1GB RAM, 1 CPU core, 10GB storage
-- **Recommended**: 2GB RAM, 2 CPU cores, 50GB storage
-- **Scaling**: Horizontal scaling possible with shared storage
-
-**Optimization Opportunities:**
-- **Database**: SQLite WAL mode for better concurrency
-- **Caching**: Media file caching for faster transfers
-- **Compression**: Zstd compression reduces bandwidth usage
-
-## 🔧 Production Configuration
-
-### Required Environment Variables (docker-compose.cognito.yml)
-```yaml
-environment:
-  # AWS Cognito Settings
-  COGNITO_USER_POOL_ID: "us-east-1_ABC123DEF"    # Your Cognito User Pool ID
-  COGNITO_CLIENT_ID: "1a2b3c4d5e6f7g8h9i0j"      # Your App Client ID
-  COGNITO_CLIENT_SECRET: "your-client-secret"      # Optional: App Client Secret
-  COGNITO_REGION: "us-east-1"                     # AWS Region
-  
-  # Server Configuration
-  ANKISYNCD_HOST: "0.0.0.0"
-  ANKISYNCD_PORT: "27702"
-  ANKISYNCD_DATA_ROOT: "/app/collections"
-  
-  # HTTPS Proxy Settings
-  DOMAIN_NAME: "yourdomain.com"                   # Your actual domain
-  ANKI_SERVER_HOST: "anki-sync-server-cognito"   # Internal container name
-  ANKI_SERVER_PORT: "27702"                      # Internal sync server port
-```
-
-### SSL Certificate Management
-The HTTPS proxy (`https_proxy.py`) automatically handles SSL certificates:
-
-1. **Checks for Let's Encrypt**: `/app/certs/{domain}.crt` and `{domain}.key`
-2. **Falls back to self-signed**: `/app/certs/localhost+3.pem` and `localhost+3-key.pem`
-3. **Serves HTTPS on port 27703**
-
-### Critical Volume Mounts
-```yaml
-volumes:
-  # MUST mount collections for data persistence
-  - ./data/collections:/app/collections
-  
-  # Optional: External SSL certificates
-  - ./certs:/app/certs:ro
-```
-
-### Production Monitoring
-```bash
-# Monitor authentication events
-docker logs anki-sync-server-cognito 2>&1 | grep "Authentication"
-
-# Check sync operations
-docker logs anki-sync-server-cognito 2>&1 | grep -E "(sync|SUCCESS|ERROR)"
-
-# View collection structure
-docker exec anki-sync-server-cognito ls -la /app/collections/users/
-
-# Check Cognito connectivity
-docker exec anki-sync-server-cognito python3 -c "
-import boto3
-client = boto3.client('cognito-idp', region_name='us-east-1')
-print('Cognito connection: OK')
-"
-```
-
-### Security Considerations
-- **Cognito credentials** stored as environment variables (not in code)
-- **Collection isolation** by username prevents user data crossover
-- **HTTPS enforcement** ensures encrypted client-server communication
-- **No local auth database** reduces attack surface
 
 ---
 
@@ -732,11 +416,10 @@ The current implementation uses AWS Cognito (`cognito_manager.py`), but the arch
 ## Project Status
 
 **✅ PRODUCTION READY**
-- Successfully deployed at `https://sync.ankipi.com`
-- Handles thousands of media files efficiently
 - Secure AWS Cognito authentication
 - Modern Anki client compatibility (v25.02+)
 - Docker deployment with HTTPS termination
+- nginx reverse proxy with Let's Encrypt SSL
 
 **🔧 CONFIGURATION REQUIRED**
 - AWS Cognito User Pool setup
