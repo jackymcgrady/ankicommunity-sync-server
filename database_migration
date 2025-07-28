@@ -1,8 +1,0 @@
-<script>start("/Users/huyuping/Dropbox/Creative/AnkiPi/database_migration/");</script>
-<script>onHasParentDirectory();</script>
-<script>addRow("create_schema.sql","create_schema.sql",0,8120,"7.9 kB",1753706781,"7/28/25, 8:46:21 PM");</script>
-<script>addRow("migrate.sh","migrate.sh",0,12533,"12.2 kB",1753706973,"7/28/25, 8:49:33 PM");</script>
-<script>addRow("MIGRATION_README.md","MIGRATION_README.md",0,6764,"6.6 kB",1753706828,"7/28/25, 8:47:08 PM");</script>
-<script>addRow("rollback_migration.sql","rollback_migration.sql",0,2358,"2.3 kB",1753706912,"7/28/25, 8:48:32 PM");</script>
-<script>addRow("test_migration.sh","test_migration.sh",0,7735,"7.6 kB",1753707054,"7/28/25, 8:50:54 PM");</script>
-<script>addRow("verify_migration.sh","verify_migration.sh",0,9310,"9.1 kB",1753706868,"7/28/25, 8:47:48 PM");</script>
