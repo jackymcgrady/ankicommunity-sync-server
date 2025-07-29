@@ -18,6 +18,7 @@ def get_user_manager(config):
         cognito_config = {
             'user_pool_id': config.get("cognito_user_pool_id"),
             'client_id': config.get("cognito_client_id"),
+            'client_secret': config.get("cognito_client_secret"),
             'region': config.get("cognito_region", "ap-southeast-1")
         }
         return CognitoUserManager(config)

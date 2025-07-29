@@ -131,6 +131,7 @@ class CognitoUserManager(SimpleUserManager):
                     actual_username = user_info['Username']
                     self.username_cache[username] = actual_username
                     logger.info(f"Authentication succeeded for user: {username}, actual username: {actual_username}")
+                    logger.info(f"Username cache updated: {username} -> {actual_username}")
                 except ClientError as e:
                     logger.warning(f"Could not retrieve username for {username}: {e}")
                     # Fallback to email identifier if we can't get the username
@@ -188,7 +189,9 @@ class CognitoUserManager(SimpleUserManager):
             hashlib.sha256
         ).digest()
         
-        return base64.b64encode(secret_hash).decode()
+        result = base64.b64encode(secret_hash).decode()
+        logger.debug(f"SECRET_HASH calculation: username='{username}', client_id='{self.client_id}', hash='{result}'")
+        return result
 
     def _is_session_valid(self, session):
         """Check if a cached session is still valid."""
@@ -334,6 +337,11 @@ class CognitoUserManager(SimpleUserManager):
                         'expires_in': auth_result.get('ExpiresIn', 3600),
                         'token_type': auth_result.get('TokenType', 'Bearer')
                     }
+                    
+                    # Update username cache if we used the actual username for hash
+                    if username_for_hash != username:
+                        self.username_cache[username] = username_for_hash
+                        logger.info(f"Username cache updated during refresh: {username} -> {username_for_hash}")
                     
                     logger.info(f"Session refreshed from stored token for user: {username} using username: {username_for_hash}")
                     return True

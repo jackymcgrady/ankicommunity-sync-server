@@ -37,7 +37,7 @@ class SqliteSessionManager(SimpleSessionManager):
         if new:
             cursor = conn.cursor()
             cursor.execute(
-                "CREATE TABLE session (hkey VARCHAR PRIMARY KEY, skey VARCHAR, username VARCHAR, path VARCHAR, refresh_token VARCHAR)"
+                "CREATE TABLE session (hkey VARCHAR PRIMARY KEY, skey VARCHAR, username VARCHAR, path VARCHAR, refresh_token VARCHAR, actual_username VARCHAR)"
             )
         else:
             # Check if refresh_token column exists, if not add it
@@ -46,6 +46,9 @@ class SqliteSessionManager(SimpleSessionManager):
             columns = [row[1] for row in cursor.fetchall()]
             if 'refresh_token' not in columns:
                 cursor.execute("ALTER TABLE session ADD COLUMN refresh_token VARCHAR")
+                conn.commit()
+            if 'actual_username' not in columns:
+                cursor.execute("ALTER TABLE session ADD COLUMN actual_username VARCHAR")
                 conn.commit()
         return conn
 
@@ -70,15 +73,19 @@ class SqliteSessionManager(SimpleSessionManager):
         cursor = conn.cursor()
 
         cursor.execute(
-            self.fs("SELECT skey, username, path, refresh_token FROM session WHERE hkey=?"), (hkey,)
+            self.fs("SELECT skey, username, path, refresh_token, actual_username FROM session WHERE hkey=?"), (hkey,)
         )
         res = cursor.fetchone()
 
         if res is not None:
             # Check and refresh Cognito tokens if needed
             if hasattr(self, 'user_manager') and hasattr(self.user_manager, 'refresh_user_session'):
-                # For this specific user, pass the actual Cognito username
-                actual_username = 'huyuping' if res[1] == 'jackymcgrady@gmail.com' else None
+                # Get the actual username from stored session or cache
+                actual_username = res[4] if len(res) > 4 else self.user_manager.username_cache.get(res[1])
+                import logging
+                logger = logging.getLogger("ankisyncd")
+                logger.debug(f"Loading session for {res[1]}, stored actual username: {res[4] if len(res) > 4 else None}")
+                logger.debug(f"Final actual username: {actual_username}")
                 if not self._validate_and_refresh_token(res[1], res[3], actual_username):  # Pass actual username
                     # Token refresh failed, remove from database
                     cursor.execute(self.fs("DELETE FROM session WHERE hkey=?"), (hkey,))
@@ -104,15 +111,19 @@ class SqliteSessionManager(SimpleSessionManager):
         cursor = conn.cursor()
 
         cursor.execute(
-            self.fs("SELECT hkey, username, path, refresh_token FROM session WHERE skey=?"), (skey,)
+            self.fs("SELECT hkey, username, path, refresh_token, actual_username FROM session WHERE skey=?"), (skey,)
         )
         res = cursor.fetchone()
 
         if res is not None:
             # Check and refresh Cognito tokens if needed
             if hasattr(self, 'user_manager') and hasattr(self.user_manager, 'refresh_user_session'):
-                # For this specific user, pass the actual Cognito username
-                actual_username = 'huyuping' if res[1] == 'jackymcgrady@gmail.com' else None
+                # Get the actual username from stored session or cache
+                actual_username = res[4] if len(res) > 4 else self.user_manager.username_cache.get(res[1])
+                import logging
+                logger = logging.getLogger("ankisyncd")
+                logger.debug(f"Loading session for {res[1]}, stored actual username: {res[4] if len(res) > 4 else None}")
+                logger.debug(f"Final actual username: {actual_username}")
                 if not self._validate_and_refresh_token(res[1], res[3], actual_username):  # Pass actual username
                     # Token refresh failed, remove from database
                     cursor.execute(self.fs("DELETE FROM session WHERE skey=?"), (skey,))
@@ -129,15 +140,18 @@ class SqliteSessionManager(SimpleSessionManager):
         conn = self._conn()
         cursor = conn.cursor()
 
-        # Get refresh token from user manager if available
+        # Get refresh token and actual username from user manager if available
         refresh_token = None
+        actual_username = None
         if hasattr(self, 'user_manager') and hasattr(self.user_manager, 'user_session_cache'):
             user_cache = self.user_manager.user_session_cache.get(session.name, {})
             refresh_token = user_cache.get('refresh_token')
+        if hasattr(self, 'user_manager') and hasattr(self.user_manager, 'username_cache'):
+            actual_username = self.user_manager.username_cache.get(session.name)
         
         cursor.execute(
-            "INSERT OR REPLACE INTO session (hkey, skey, username, path, refresh_token) VALUES (?, ?, ?, ?, ?)",
-            (hkey, session.skey, session.name, session.path, refresh_token),
+            "INSERT OR REPLACE INTO session (hkey, skey, username, path, refresh_token, actual_username) VALUES (?, ?, ?, ?, ?, ?)",
+            (hkey, session.skey, session.name, session.path, refresh_token, actual_username),
         )
 
         conn.commit()
@@ -176,15 +190,30 @@ class SqliteSessionManager(SimpleSessionManager):
             
             # Token invalid or expired, try to refresh using stored refresh token
             if stored_refresh_token and hasattr(self.user_manager, 'refresh_user_session_with_token'):
-                return self.user_manager.refresh_user_session_with_token(username, stored_refresh_token, actual_username)
+                success = self.user_manager.refresh_user_session_with_token(username, stored_refresh_token, actual_username)
+                if not success:
+                    import logging
+                    logger = logging.getLogger("ankisyncd")
+                    logger.warning(f"Token refresh failed for {username} with stored token")
+                return success
             elif hasattr(self.user_manager, 'refresh_user_session'):
                 # Fallback to original method (requires in-memory cache)
-                return self.user_manager.refresh_user_session(username)
+                success = self.user_manager.refresh_user_session(username)
+                if not success:
+                    import logging
+                    logger = logging.getLogger("ankisyncd")
+                    logger.warning(f"Token refresh failed for {username} with in-memory cache")
+                return success
             
+            import logging
+            logger = logging.getLogger("ankisyncd")
+            logger.warning(f"No refresh method available or no stored token for {username}")
             return False
         except Exception as e:
             # Log error but don't crash the session loading
             import logging
             logger = logging.getLogger("ankisyncd")
             logger.error(f"Error validating/refreshing token for {username}: {e}")
+            logger.debug(f"Stored refresh token length: {len(stored_refresh_token or '')}")
+            logger.debug(f"Actual username: {actual_username}")
             return False
