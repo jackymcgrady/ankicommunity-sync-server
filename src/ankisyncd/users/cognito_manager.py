@@ -81,7 +81,9 @@ class CognitoUserManager(SimpleUserManager):
             
             # Add client secret to auth params if configured
             if self.client_secret:
-                auth_params['SECRET_HASH'] = self._calculate_secret_hash(username)
+                # For refresh, use the actual Cognito username, not the email identifier
+                actual_username = self.username_cache.get(username, username)
+                auth_params['SECRET_HASH'] = self._calculate_secret_hash(actual_username)
 
             print(f"DEBUG: Attempting auth for user: {username}")
             print(f"DEBUG: Using user_pool_id: {self.user_pool_id}")
@@ -237,14 +239,25 @@ class CognitoUserManager(SimpleUserManager):
             }
             
             if self.client_secret:
-                auth_params['SECRET_HASH'] = self._calculate_secret_hash(username)
+                # For refresh, use the actual Cognito username, not the email identifier
+                actual_username = self.username_cache.get(username, username)
+                auth_params['SECRET_HASH'] = self._calculate_secret_hash(actual_username)
             
-            response = self.cognito_client.admin_initiate_auth(
-                UserPoolId=self.user_pool_id,
-                ClientId=self.client_id,
-                AuthFlow='REFRESH_TOKEN_AUTH',
-                AuthParameters=auth_params
-            )
+            # Use same API as authentication for consistency
+            try:
+                response = self.cognito_client.initiate_auth(
+                    ClientId=self.client_id,
+                    AuthFlow='REFRESH_TOKEN_AUTH',
+                    AuthParameters=auth_params
+                )
+            except Exception as e:
+                # Fallback to admin auth if user-level fails
+                response = self.cognito_client.admin_initiate_auth(
+                    UserPoolId=self.user_pool_id,
+                    ClientId=self.client_id,
+                    AuthFlow='REFRESH_TOKEN_AUTH',
+                    AuthParameters=auth_params
+                )
             
             if 'AuthenticationResult' in response:
                 auth_result = response['AuthenticationResult']
@@ -267,6 +280,75 @@ class CognitoUserManager(SimpleUserManager):
             # Remove invalid session from cache
             del self.user_session_cache[username]
             return False
+
+    def refresh_user_session_with_token(self, username, refresh_token, actual_username=None):
+        """Refresh user session using provided refresh token (for persistent storage)."""
+        if not refresh_token:
+            return False
+        
+        # Try refresh with different username formats for SecretHash
+        usernames_to_try = []
+        if actual_username:
+            usernames_to_try.append(actual_username)
+        if username in self.username_cache:
+            usernames_to_try.append(self.username_cache[username])
+        usernames_to_try.append(username)  # Original as fallback
+        
+        # Remove duplicates while preserving order
+        usernames_to_try = list(dict.fromkeys(usernames_to_try))
+        
+        last_error = None
+        for username_for_hash in usernames_to_try:
+            try:
+                auth_params = {
+                    'REFRESH_TOKEN': refresh_token
+                }
+                
+                if self.client_secret:
+                    auth_params['SECRET_HASH'] = self._calculate_secret_hash(username_for_hash)
+                
+                # Use same API as authentication for consistency
+                try:
+                    response = self.cognito_client.initiate_auth(
+                        ClientId=self.client_id,
+                        AuthFlow='REFRESH_TOKEN_AUTH',
+                        AuthParameters=auth_params
+                    )
+                except Exception as e:
+                    # Fallback to admin auth if user-level fails
+                    response = self.cognito_client.admin_initiate_auth(
+                        UserPoolId=self.user_pool_id,
+                        ClientId=self.client_id,
+                        AuthFlow='REFRESH_TOKEN_AUTH',
+                        AuthParameters=auth_params
+                    )
+                
+                if 'AuthenticationResult' in response:
+                    auth_result = response['AuthenticationResult']
+                    
+                    # Create or update cached session
+                    self.user_session_cache[username] = {
+                        'access_token': auth_result['AccessToken'],
+                        'refresh_token': refresh_token,  # Keep the original refresh token
+                        'id_token': auth_result.get('IdToken'),
+                        'expires_in': auth_result.get('ExpiresIn', 3600),
+                        'token_type': auth_result.get('TokenType', 'Bearer')
+                    }
+                    
+                    logger.info(f"Session refreshed from stored token for user: {username} using username: {username_for_hash}")
+                    return True
+                    
+            except ClientError as e:
+                last_error = e
+                logger.debug(f"Refresh failed with username '{username_for_hash}': {e}")
+                continue  # Try next username format
+                
+        # All username formats failed
+        logger.error(f"Error refreshing session with stored token for {username}: {last_error}")
+        # Remove from cache if it exists
+        if username in self.user_session_cache:
+            del self.user_session_cache[username]
+        return False
 
     def clear_user_session(self, username):
         """Clear cached session for a user."""

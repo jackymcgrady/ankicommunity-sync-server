@@ -42,12 +42,11 @@ services:
       - PYTHONPATH=/app/src
     volumes:
       - ./src:/app/src
-      - ./data:/data:rw
+      - ${DATA_VOLUME_SOURCE:-data}:/data:rw
     restart: unless-stopped
     command: >
       sh -c "
         mkdir -p /data/collections &&
-        chown -R 1000:1000 /data &&
         exec python -m ankisyncd
       "
     healthcheck:

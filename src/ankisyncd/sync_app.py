@@ -735,6 +735,10 @@ class SyncApp:
         self.user_manager = get_user_manager(config)
         self.session_manager = get_session_manager(config)  # Use persistent session manager
         
+        # Inject user_manager into session_manager for token refresh integration
+        if hasattr(self.session_manager, '__dict__'):
+            self.session_manager.user_manager = self.user_manager
+        
         # Initialize collection manager and other required attributes
         from ankisyncd.collection import CollectionManager
         self.collection_manager = CollectionManager(config)
