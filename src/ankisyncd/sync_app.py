@@ -337,6 +337,7 @@ class SyncCollectionHandler(Syncer):
         server = self.sanityCheck()
         if client != server:
             logger.info(f"sanity check failed with server: {server} client: {client}")
+            logger.warning(f"🔍 DEBUG: Post-sync sanity check failed - this often happens after forced one-way sync with collection replacement")
             return dict(status="bad", c=client, s=server)
         return dict(status="ok")
 
@@ -683,14 +684,14 @@ class chunked(object):
                 resp = Response(body, content_type='application/octet-stream')
                 resp.headers['anki-original-size'] = str(orig)
                 resp.headers['Content-Length'] = str(len(body)) # Explicitly set Content-Length
-                logger.info(f"Setting anki-original-size header: {orig} bytes for path {environ.get('PATH_INFO')}")
+                logger.info(f"Setting anki-original-size header: {orig} bytes")
             else:
                 # w could be raw bytes or a Response object
                 if isinstance(w, (bytes, bytearray)):
                     resp = Response(w, content_type='application/octet-stream')
                     resp.headers['anki-original-size'] = str(len(w))
                     resp.headers['Content-Length'] = str(len(w)) # Explicitly set Content-Length
-                    logger.info(f"Auto-added anki-original-size header: {len(w)} bytes for path {environ.get('PATH_INFO')}")
+                    logger.info(f"Auto-added anki-original-size header: {len(w)} bytes")
                 else:
                     resp = Response(w)
 
@@ -843,6 +844,27 @@ class SyncApp:
             if col_path in session.collection_manager.collections:
                 session.collection_manager.collections[col_path].close()
                 del session.collection_manager.collections[col_path]
+        
+        # CRITICAL: Reset sync handler state after collection replacement
+        # This prevents stale sync state from causing post-upload sync failures
+        logger.info("🔍 DEBUG: Resetting sync handler state after forced one-way sync upload")
+        
+        # Reset collection handler if it exists
+        if hasattr(session, 'collection_handler'):
+            session.collection_handler = None
+            logger.info("🔍 DEBUG: Cleared collection handler")
+        
+        # Reset any cached sync state
+        if hasattr(session, '_cached_sync_state'):
+            session._cached_sync_state = None
+            logger.info("🔍 DEBUG: Cleared cached sync state")
+            
+        # Reset media sync state to prevent media/collection state mismatches
+        if hasattr(session, 'media_handler'):
+            session.media_handler = None
+            logger.info("🔍 DEBUG: Cleared media handler")
+            
+        logger.info("🔍 DEBUG: Sync state reset completed after collection upload")
 
     def operation_download(self, col, session):
         # returns user data (not media) as a sqlite3 database for replacing their
@@ -1050,6 +1072,16 @@ class SyncApp:
             raise HTTPBadRequest(f"Unknown operation: {operation}")
 
         logger.info(f"Operation: {operation}")
+        
+        # Debug: Add extra logging for operations that might fail with review history
+        if operation in ['meta', 'applyChanges', 'start', 'chunk']:
+            logger.info(f"🔍 DEBUG: Processing operation '{operation}' - this operation may be sensitive to review history")
+        
+        # Debug: Log all collection sync operations vs media sync operations
+        if req.path.startswith('/sync/'):
+            logger.info(f"🔍 DEBUG: COLLECTION SYNC operation '{operation}' starting")
+        elif req.path.startswith('/msync/'):
+            logger.info(f"🔍 DEBUG: MEDIA SYNC operation '{operation}' starting")
 
         # Handle authentication operations
         if operation == "hostKey":
@@ -1162,7 +1194,9 @@ class SyncApp:
             return compressed, orig_size
         
         # Handle other sync operations with modern protocol support
+        logger.info(f"🔍 DEBUG: Getting collection sync handler for operation '{operation}' with review history")
         handler = session.get_handler_for_operation(operation, col)
+        logger.info(f"🔍 DEBUG: Successfully created collection sync handler for operation '{operation}'")
         
         # Parse request data from JSON
         request_data = req.get_json_data()

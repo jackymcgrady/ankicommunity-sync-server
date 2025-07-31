@@ -118,8 +118,12 @@ class SchemaUpdater:
         }
         
         # Handle schema-specific table mappings
-        if self._schema_version >= 18:
+        # Always include graves table since it exists in all schema versions
+        if self._table_exists('graves'):
             self._field_mappings['graves'] = self._get_table_fields('graves')
+        else:
+            # Provide default graves mapping if table doesn't exist
+            self._field_mappings['graves'] = self._get_legacy_fields('graves')
         
         if self._schema_version >= 17:
             self._field_mappings['tags'] = self._get_table_fields('tags')
@@ -139,11 +143,27 @@ class SchemaUpdater:
             })
         
         logger.info(f"Field mappings for schema V{self._schema_version}: {list(self._field_mappings.keys())}")
+        
+        # Debug: Check revlog table handling for collections with review history
+        if 'revlog' in self._field_mappings:
+            revlog_fields = self._field_mappings['revlog']
+            logger.info(f"🔍 DEBUG: Revlog table has {len(revlog_fields)} fields: {revlog_fields}")
+            
+            # Check if revlog table has data (indicates review history)
+            try:
+                revlog_count = self.col.db.scalar("SELECT COUNT(*) FROM revlog")
+                logger.info(f"🔍 DEBUG: Collection has {revlog_count} review history entries")
+                if revlog_count > 0:
+                    logger.info("🔍 DEBUG: This collection contains review history - extra attention needed for sync compatibility")
+            except Exception as e:
+                logger.warning(f"Could not check revlog count: {e}")
+        else:
+            logger.error("❌ DEBUG: No revlog field mapping found - this could cause sync issues")
     
     def _get_table_fields(self, table_name: str) -> List[str]:
         """Get the actual field names for a table from the database."""
         try:
-            # Get table schema
+            # Get table schema - fetchall() returns a list, not a cursor
             schema_info = self.col.db.execute(f"PRAGMA table_info({table_name})").fetchall()
             fields = [row[1] for row in schema_info]  # row[1] is the column name
             logger.debug(f"Table {table_name} has fields: {fields}")

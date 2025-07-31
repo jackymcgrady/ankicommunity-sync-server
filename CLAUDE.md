@@ -9,3 +9,6 @@
 
 ## Development Philosophy
 - Never ask me to downgrade the client to meet traditional server, as I'm taking this server online to meet modern anki users.
+
+## Compatibility
+- When client version is higher than what is compatible with the server, remember to always try to update the server (refer to @Anki_Client_Code/ for latest client expectations)
