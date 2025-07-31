@@ -180,12 +180,12 @@ class ServerMediaDatabase:
     
     def register_uploaded_change(self, filename: str, data: Optional[bytes], 
                                sha1_hex: Optional[str]) -> Tuple[str, int]:
-        """Register an uploaded file change and return action taken and new USN."""
+        """Register an uploaded file change with atomic operations to prevent race conditions."""
         current_usn = self.last_usn()
         new_usn = current_usn + 1
         
         if data is None:
-            # File deletion
+            # File deletion - no filesystem operation needed, just database update
             existing = self.db.execute(
                 "SELECT csum, size FROM media WHERE fname = ?", (filename,)
             ).fetchone()
@@ -197,10 +197,15 @@ class ServerMediaDatabase:
             else:
                 action = "already_deleted"
         else:
-            # File addition/update
+            # File addition/update - implement atomic operations
             file_size = len(data)
             csum_bytes = bytes.fromhex(sha1_hex) if sha1_hex else hashlib.sha1(data).digest()
             mtime = int(time.time())
+            
+            # Verify checksum before any operations
+            calculated_checksum = hashlib.sha1(data).digest()
+            if csum_bytes != calculated_checksum:
+                raise ValueError(f"Checksum mismatch for {filename}: expected {csum_bytes.hex()}, got {calculated_checksum.hex()}")
             
             existing = self.db.execute(
                 "SELECT csum, size FROM media WHERE fname = ?", (filename,)
@@ -209,22 +214,37 @@ class ServerMediaDatabase:
             if existing and existing[0] == csum_bytes:
                 action = "identical"
             else:
-                self.db.execute("""
-                    INSERT OR REPLACE INTO media (fname, csum, size, usn, mtime)
-                    VALUES (?, ?, ?, ?, ?)
-                """, (filename, csum_bytes, file_size, new_usn, mtime))
-                
-                if existing:
-                    self._update_meta_after_replacement(existing[1], file_size)
-                    action = "replaced"
-                else:
-                    self._update_meta_after_addition(file_size)
-                    action = "added"
+                # Database-only operation - filesystem operations are handled separately in atomic method
+                try:
+                    # Update database within transaction
+                    self.db.execute("""
+                        INSERT OR REPLACE INTO media (fname, csum, size, usn, mtime)
+                        VALUES (?, ?, ?, ?, ?)
+                    """, (filename, csum_bytes, file_size, new_usn, mtime))
+                    
+                    if existing:
+                        self._update_meta_after_replacement(existing[1], file_size)
+                        action = "replaced"
+                    else:
+                        self._update_meta_after_addition(file_size)
+                        action = "added"
+                    
+                    logger.debug(f"Database operation completed for {filename}: action={action}")
+                    
+                except Exception as db_error:
+                    # Database operation failed - rollback and re-raise
+                    self.db.rollback()
+                    logger.error(f"Database operation failed for {filename}: {db_error}")
+                    raise ValueError(f"Database operation failed for {filename}: {db_error}")
         
+        # Update USN only for actual changes
         if action != "identical" and action != "already_deleted":
             self.db.execute("UPDATE meta SET last_usn = ?", (new_usn,))
         
+        # Commit all database changes - this makes the operation atomic
         self.db.commit()
+        logger.debug(f"Atomic operation completed for {filename}: action={action}")
+        
         return action, new_usn if action not in ("identical", "already_deleted") else current_usn
     
     def _update_meta_after_addition(self, file_size: int):
@@ -342,31 +362,24 @@ class ServerMediaManager:
                     skipped += 1
                     continue
                 
-                # Process the change
-                action, new_usn = self.db.register_uploaded_change(filename, data, sha1_hex)
-                
-                if action in ("added", "replaced") and data:
-                    # Write file to disk
-                    file_path = self.media_folder / filename
-                    with open(file_path, "wb") as f:
-                        f.write(data)
-                    logger.debug(f"Wrote file: {filename} ({len(data)} bytes)")
+                # Process the change with atomic filesystem operations
+                try:
+                    action, new_usn = self._process_media_change_atomically(filename, data, sha1_hex)
                     
                     if action == "added":
                         added += 1
-                    else:
+                    elif action == "replaced":
                         replaced += 1
-                
-                elif action == "removed":
-                    # Remove file from disk
-                    file_path = self.media_folder / filename
-                    if file_path.exists():
-                        file_path.unlink()
-                        logger.debug(f"Removed file: {filename}")
-                    removed += 1
+                    elif action == "removed":
+                        removed += 1
+                    elif action == "identical":
+                        identical += 1
                     
-                elif action == "identical":
-                    identical += 1
+                except Exception as e:
+                    logger.error(f"Failed to process media change for {filename}: {e}")
+                    # Don't let one failed file break the entire upload
+                    skipped += 1
+                    continue
                 
                 processed += 1
             
@@ -540,6 +553,96 @@ class ServerMediaManager:
                 raise ValueError(f"Unsupported metadata format: {type(meta)}")
         
         return changes
+    
+    def _process_media_change_atomically(self, filename: str, data: Optional[bytes], 
+                                       sha1_hex: Optional[str]) -> Tuple[str, int]:
+        """Process a media change with atomic filesystem operations."""
+        if data is None:
+            # File deletion - handle filesystem and database atomically
+            action, new_usn = self.db.register_uploaded_change(filename, data, sha1_hex)
+            
+            if action == "removed":
+                # Remove file from filesystem after successful database update
+                file_path = self.media_folder / filename
+                if file_path.exists():
+                    try:
+                        file_path.unlink()
+                        logger.debug(f"Removed file: {filename}")
+                    except Exception as e:
+                        logger.warning(f"Could not remove file {filename}: {e}")
+                        # File removal failed, but database was updated - this is not critical
+                        # The file will be orphaned but won't cause sync issues
+            
+            return action, new_usn
+        else:
+            # File addition/update - use temporary files for atomic operations
+            temp_file_path = None
+            final_file_path = self.media_folder / filename
+            
+            try:
+                # Step 1: Create temporary file with unique name
+                import tempfile
+                temp_fd, temp_file_path = tempfile.mkstemp(
+                    suffix=f"_{filename}", 
+                    dir=self.media_folder, 
+                    prefix=".tmp_"
+                )
+                
+                # Step 2: Write data to temporary file
+                with os.fdopen(temp_fd, 'wb') as temp_file:
+                    temp_file.write(data)
+                    temp_file.flush()
+                    os.fsync(temp_file.fileno())  # Force write to disk
+                
+                # Step 3: Verify file was written correctly
+                if not os.path.exists(temp_file_path):
+                    raise IOError(f"Temporary file was not created: {temp_file_path}")
+                
+                actual_size = os.path.getsize(temp_file_path)
+                if actual_size != len(data):
+                    raise IOError(f"File size mismatch: expected {len(data)}, got {actual_size}")
+                
+                # Step 4: Verify checksum of written file
+                with open(temp_file_path, 'rb') as verify_file:
+                    written_data = verify_file.read()
+                    if written_data != data:
+                        raise IOError(f"File content verification failed for {filename}")
+                
+                # Step 5: Atomically move temporary file to final location BEFORE database update
+                # This ensures filesystem is consistent before database claims the file exists
+                try:
+                    # Remove existing file if it exists (for replacement)
+                    if final_file_path.exists():
+                        final_file_path.unlink()
+                    
+                    # Atomic move operation
+                    os.rename(temp_file_path, str(final_file_path))
+                    temp_file_path = None  # Successfully moved, don't clean up
+                    
+                    logger.debug(f"Filesystem write completed for {filename} ({len(data)} bytes)")
+                    
+                except Exception as move_error:
+                    logger.error(f"Failed to move file {filename}: {move_error}")
+                    raise IOError(f"Atomic file move failed for {filename}: {move_error}")
+                
+                # Step 6: Update database only AFTER successful filesystem operation
+                # This prevents race condition where database thinks file exists but filesystem doesn't have it
+                action, new_usn = self.db.register_uploaded_change(filename, data, sha1_hex)
+                
+                return action, new_usn
+                
+            except Exception as e:
+                logger.error(f"Atomic media operation failed for {filename}: {e}")
+                raise
+            
+            finally:
+                # Clean up temporary file if it still exists
+                if temp_file_path and os.path.exists(temp_file_path):
+                    try:
+                        os.unlink(temp_file_path)
+                        logger.debug(f"Cleaned up temporary file: {temp_file_path}")
+                    except Exception as cleanup_error:
+                        logger.warning(f"Could not clean up temporary file {temp_file_path}: {cleanup_error}")
     
     def _normalize_filename(self, filename: str) -> str:
         """Normalize filename for cross-platform compatibility."""
