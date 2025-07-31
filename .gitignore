@@ -369,3 +369,6 @@ test_*.py
 
 # Ignore config files with real credentials
 src/ankisyncd.cognito.conf
+
+# Ignore EFS mount point (collection and media files)
+/efs/
