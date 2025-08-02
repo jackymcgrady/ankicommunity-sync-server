@@ -51,138 +51,190 @@ class ServerMediaDatabase:
             self._upgrade_schema()
     
     def _create_schema(self):
-        """Create the modern media database schema."""
+        """Create the correct append-only operation log schema."""
         self.db.executescript("""
-            CREATE TABLE media (
-                fname TEXT NOT NULL PRIMARY KEY,
+            -- Append-only operation log (core of media sync)
+            CREATE TABLE media_operations (
+                usn INTEGER PRIMARY KEY,
+                operation TEXT NOT NULL CHECK (operation IN ('add', 'remove')),
+                fname TEXT NOT NULL,
+                csum BLOB,      -- NULL for remove operations
+                size INTEGER,   -- NULL for remove operations  
+                timestamp INTEGER NOT NULL
+            );
+            
+            -- Current media state (derived from operations)
+            CREATE TABLE media_current (
+                fname TEXT PRIMARY KEY,
                 csum BLOB NOT NULL,
                 size INTEGER NOT NULL,
-                usn INTEGER NOT NULL,
+                added_usn INTEGER NOT NULL,
                 mtime INTEGER NOT NULL
             );
             
-            CREATE INDEX ix_usn ON media (usn);
-            
+            -- Global metadata
             CREATE TABLE meta (
                 last_usn INTEGER NOT NULL,
                 total_bytes INTEGER NOT NULL,
                 total_nonempty_files INTEGER NOT NULL
             );
             
+            -- Indexes for efficient queries
+            CREATE INDEX ix_operations_usn ON media_operations (usn);
+            CREATE INDEX ix_operations_fname ON media_operations (fname);
+            CREATE INDEX ix_current_usn ON media_current (added_usn);
+            
             INSERT INTO meta (last_usn, total_bytes, total_nonempty_files) 
             VALUES (0, 0, 0);
             
-            PRAGMA user_version = 4;
+            PRAGMA user_version = 5;
         """)
         self.db.commit()
-        logger.info("Created new media database with modern schema")
+        logger.info("Created new append-only operation log media database schema")
     
     def _upgrade_schema(self):
-        """Upgrade legacy media database to modern schema."""
+        """Upgrade legacy media database to correct operation log schema."""
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
         
-        if version < 4:
-            logger.info(f"Upgrading media database from version {version} to 4")
+        if version < 5:
+            logger.info(f"Upgrading media database from version {version} to 5 (operation log)")
             
-            # Check if we have legacy schema
+            # Check if we have any existing schema  
             tables = self.db.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()
             table_names = [t[0] for t in tables]
             
-            if 'media' in table_names:
-                # Check current schema
-                columns = self.db.execute("PRAGMA table_info(media)").fetchall()
-                column_names = [c[1] for c in columns]
+            if 'media' in table_names or 'media_current' in table_names:
+                logger.warning("🔄 MIGRATING FROM INCORRECT USN SCHEMA TO OPERATION LOG")
                 
-                if 'csum' in column_names and 'size' not in column_names:
-                    # Legacy schema - upgrade it
-                    self.db.executescript("""
-                        BEGIN EXCLUSIVE;
-                        
-                        ALTER TABLE media RENAME TO media_tmp;
-                        
-                        CREATE TABLE media (
-                            fname TEXT NOT NULL PRIMARY KEY,
-                            csum BLOB NOT NULL,
-                            size INTEGER NOT NULL,
-                            usn INTEGER NOT NULL,
-                            mtime INTEGER NOT NULL
-                        );
-                        
-                        INSERT INTO media (fname, csum, size, usn, mtime)
-                        SELECT fname, 
-                               CASE WHEN csum IS NULL THEN X'' ELSE csum END,
-                               0,  -- size unknown for legacy files
-                               usn,
-                               CAST(strftime('%s', 'now') AS INTEGER)
-                        FROM media_tmp 
-                        WHERE csum IS NOT NULL;
-                        
-                        DROP TABLE media_tmp;
-                        CREATE INDEX ix_usn ON media (usn);
-                        
-                        -- Create or update meta table
-                        DROP TABLE IF EXISTS meta;
-                        CREATE TABLE meta (
-                            last_usn INTEGER NOT NULL,
-                            total_bytes INTEGER NOT NULL,
-                            total_nonempty_files INTEGER NOT NULL
-                        );
-                        
-                        INSERT INTO meta (last_usn, total_bytes, total_nonempty_files)
-                        SELECT COALESCE(MAX(usn), 0),
-                               0,  -- total_bytes unknown for legacy
-                               COUNT(*)
-                        FROM media WHERE size >= 0;
-                        
-                        PRAGMA user_version = 4;
-                        COMMIT;
-                    """)
-                    logger.info("Successfully upgraded legacy media database")
-            else:
-                # No existing media table, create new schema
+                # Backup existing data before migration
+                existing_files = []
+                try:
+                    if 'media' in table_names:
+                        # Extract current files from old incorrect schema
+                        rows = self.db.execute("SELECT fname, csum, size, mtime FROM media WHERE csum IS NOT NULL").fetchall()
+                        existing_files = [(fname, csum, size if size else 0, mtime) for fname, csum, size, mtime in rows]
+                        logger.info(f"Found {len(existing_files)} files in old schema to migrate")
+                    elif 'media_current' in table_names:
+                        # Extract from slightly newer but still incorrect schema
+                        rows = self.db.execute("SELECT fname, csum, size, mtime FROM media_current").fetchall()
+                        existing_files = [(fname, csum, size, mtime) for fname, csum, size, mtime in rows]
+                        logger.info(f"Found {len(existing_files)} files in current table to migrate")
+                except Exception as e:
+                    logger.warning(f"Could not extract existing files for migration: {e}")
+                
+                # Drop all old tables and recreate with correct schema
+                self.db.executescript("""
+                    BEGIN EXCLUSIVE;
+                    DROP TABLE IF EXISTS media;
+                    DROP TABLE IF EXISTS media_current;
+                    DROP TABLE IF EXISTS media_operations;
+                    DROP TABLE IF EXISTS meta;
+                    DROP INDEX IF EXISTS ix_usn;
+                    DROP INDEX IF EXISTS ix_operations_usn;
+                    DROP INDEX IF EXISTS ix_operations_fname;
+                    DROP INDEX IF EXISTS ix_current_usn;
+                    COMMIT;
+                """)
+                
+                # Create new correct schema
                 self._create_schema()
-                self._check_for_usn_alignment_on_creation()
+                
+                # Migrate existing files as ADD operations
+                if existing_files:
+                    logger.info(f"Creating operation log entries for {len(existing_files)} existing files")
+                    current_time = int(time.time())
+                    
+                    for i, (fname, csum, size, mtime) in enumerate(existing_files, 1):
+                        # Each existing file becomes an ADD operation with sequential USN
+                        self.db.execute("""
+                            INSERT INTO media_operations (usn, operation, fname, csum, size, timestamp)
+                            VALUES (?, 'add', ?, ?, ?, ?)
+                        """, (i, fname, csum, size, current_time))
+                        
+                        # Also add to current state
+                        self.db.execute("""
+                            INSERT INTO media_current (fname, csum, size, added_usn, mtime)
+                            VALUES (?, ?, ?, ?, ?)
+                        """, (fname, csum, size, i, mtime))
+                    
+                    # Update meta with final USN
+                    self.db.execute("""
+                        UPDATE meta SET 
+                            last_usn = ?,
+                            total_nonempty_files = ?,
+                            total_bytes = ?
+                    """, (len(existing_files), len(existing_files), sum(size for _, _, size, _ in existing_files)))
+                    
+                    self.db.commit()
+                    logger.info(f"✅ Migration complete: {len(existing_files)} operations in log, last_usn={len(existing_files)}")
+                else:
+                    logger.info("✅ Migration complete: No existing files, clean operation log")
+            else:
+                # No existing tables, create fresh schema
+                logger.info("Creating fresh operation log schema")
+                self._create_operation_log_for_existing_files()
     
-    def _check_for_usn_alignment_on_creation(self):
-        """Check if USN alignment is needed when creating a new media database.
-        
-        This handles the case where a collection upload has occurred and we're
-        creating a fresh media database, but there are existing media files
-        that would cause USN misalignment issues.
-        """
+    def _create_operation_log_for_existing_files(self):
+        """Create operation log entries for existing media files on disk."""
         try:
             # Get the directory containing the database
             media_folder = Path(self.db_path).parent / "collection.media"
             
             if media_folder.exists():
-                # Count existing media files
-                existing_files = [f for f in media_folder.iterdir() if f.is_file() and not f.name.startswith('.')]
+                # Find existing media files
+                existing_files = []
+                for file_path in media_folder.iterdir():
+                    if file_path.is_file() and not file_path.name.startswith('.'):
+                        try:
+                            # Calculate file info
+                            stat_result = file_path.stat()
+                            with open(file_path, 'rb') as f:
+                                content = f.read()
+                                csum = hashlib.sha1(content).digest()
+                            
+                            existing_files.append((
+                                file_path.name,
+                                csum,
+                                len(content),
+                                int(stat_result.st_mtime)
+                            ))
+                        except Exception as e:
+                            logger.warning(f"Could not process existing file {file_path.name}: {e}")
                 
                 if existing_files:
-                    logger.warning("🚨 CRITICAL USN ALIGNMENT ISSUE DETECTED!")
-                    logger.warning(f"🚨 Creating new media database but {len(existing_files)} media files already exist")
-                    logger.warning("🚨 This WILL cause 303 errors due to USN misalignment!")
+                    logger.warning(f"🔄 Creating operation log for {len(existing_files)} existing media files")
+                    current_time = int(time.time())
                     
-                    # This is the critical fix: when a new media database is created
-                    # but media files exist, we need to ensure USN starts at 0
-                    # so client progression math works correctly
-                    logger.info("✅ APPLYING USN ALIGNMENT FIX: Resetting media USN to 0 for clean progression")
+                    for i, (fname, csum, size, mtime) in enumerate(existing_files, 1):
+                        # Each existing file becomes an ADD operation with sequential USN
+                        self.db.execute("""
+                            INSERT INTO media_operations (usn, operation, fname, csum, size, timestamp)
+                            VALUES (?, 'add', ?, ?, ?, ?)
+                        """, (i, fname, csum, size, current_time))
+                        
+                        # Also add to current state
+                        self.db.execute("""
+                            INSERT INTO media_current (fname, csum, size, added_usn, mtime)
+                            VALUES (?, ?, ?, ?, ?)
+                        """, (fname, csum, size, i, mtime))
                     
-                    # The database was just created with USN 0, so we're already aligned
-                    # But let's log this clearly for debugging
-                    current_usn = self.last_usn()
-                    logger.info(f"✅ USN ALIGNMENT SUCCESS: Media database created with USN {current_usn}")
-                    logger.info("✅ Client sync will start from USN 0 and progress incrementally")
-                    logger.info("✅ This prevents the 303 errors caused by massive repeated downloads")
+                    # Update meta with final USN
+                    self.db.execute("""
+                        UPDATE meta SET 
+                            last_usn = ?,
+                            total_nonempty_files = ?,
+                            total_bytes = ?
+                    """, (len(existing_files), len(existing_files), sum(size for _, _, size, _ in existing_files)))
+                    
+                    self.db.commit()
+                    logger.info(f"✅ Operation log created: {len(existing_files)} ADD operations, last_usn={len(existing_files)}")
                 else:
-                    logger.debug("🔍 New media database created with no existing files - USN alignment not needed")
-            else:
-                logger.debug("🔍 New media database created with no media folder - USN alignment not needed")
-                
+                    logger.info("✅ No existing media files found, clean operation log ready")
         except Exception as e:
-            logger.error(f"❌ Error during USN alignment check: {e}")
+            logger.error(f"Error creating operation log for existing files: {e}")
+    
     
     def last_usn(self) -> int:
         """Get the last USN from the database."""
@@ -190,16 +242,18 @@ class ServerMediaDatabase:
         return result[0] if result else 0
     
     def media_changes_chunk(self, after_usn: int) -> List[Tuple[str, int, str]]:
-        """Get media changes after the specified USN."""
-        changes = self.db.execute("""
-            SELECT fname, usn, hex(csum) 
-            FROM media 
+        """Get media operations after the specified USN from the operation log."""
+        operations = self.db.execute("""
+            SELECT fname, usn, 
+                   CASE WHEN operation = 'remove' THEN '' 
+                        ELSE hex(csum) END as csum_hex
+            FROM media_operations 
             WHERE usn > ? 
             ORDER BY usn 
             LIMIT 250
         """, (after_usn,)).fetchall()
         
-        return [(fname, usn, csum) for fname, usn, csum in changes]
+        return [(fname, usn, csum_hex) for fname, usn, csum_hex in operations]
     
     def nonempty_file_count(self) -> int:
         """Get count of non-empty files."""
@@ -208,8 +262,8 @@ class ServerMediaDatabase:
     
     def recalculate_file_count(self) -> int:
         """Recalculate and fix the file count in meta table."""
-        actual_count = self.db.execute("SELECT COUNT(*) FROM media WHERE size > 0").fetchone()[0]
-        actual_bytes = self.db.execute("SELECT COALESCE(SUM(size), 0) FROM media WHERE size > 0").fetchone()[0]
+        actual_count = self.db.execute("SELECT COUNT(*) FROM media_current WHERE size > 0").fetchone()[0]
+        actual_bytes = self.db.execute("SELECT COALESCE(SUM(size), 0) FROM media_current WHERE size > 0").fetchone()[0]
         
         self.db.execute("""
             UPDATE meta SET 
@@ -223,26 +277,34 @@ class ServerMediaDatabase:
     
     def register_uploaded_change(self, filename: str, data: Optional[bytes], 
                                sha1_hex: Optional[str]) -> Tuple[str, int]:
-        """Register an uploaded file change with atomic operations to prevent race conditions."""
+        """Register an uploaded file change in the operation log (correct Anki protocol)."""
         current_usn = self.last_usn()
         new_usn = current_usn + 1
+        current_time = int(time.time())
         
-        logger.debug(f"🔍 MEDIA USN DEBUG: Processing {filename}, current_usn={current_usn}, new_usn={new_usn}")
+        logger.debug(f"🔍 OPERATION LOG: Processing {filename}, current_usn={current_usn}, new_usn={new_usn}")
         
         if data is None:
-            # File deletion - no filesystem operation needed, just database update
+            # File deletion - add REMOVE operation to log
             existing = self.db.execute(
-                "SELECT csum, size FROM media WHERE fname = ?", (filename,)
+                "SELECT csum, size FROM media_current WHERE fname = ?", (filename,)
             ).fetchone()
             
             if existing:
-                self.db.execute("DELETE FROM media WHERE fname = ?", (filename,))
+                # Add REMOVE operation to log
+                self.db.execute("""
+                    INSERT INTO media_operations (usn, operation, fname, csum, size, timestamp)
+                    VALUES (?, 'remove', ?, NULL, NULL, ?)
+                """, (new_usn, filename, current_time))
+                
+                # Remove from current state
+                self.db.execute("DELETE FROM media_current WHERE fname = ?", (filename,))
                 self._update_meta_after_deletion(existing[1])
                 action = "removed"
             else:
                 action = "already_deleted"
         else:
-            # File addition/update - implement atomic operations
+            # File addition/update - add ADD operation to log
             file_size = len(data)
             csum_bytes = bytes.fromhex(sha1_hex) if sha1_hex else hashlib.sha1(data).digest()
             mtime = int(time.time())
@@ -253,17 +315,22 @@ class ServerMediaDatabase:
                 raise ValueError(f"Checksum mismatch for {filename}: expected {csum_bytes.hex()}, got {calculated_checksum.hex()}")
             
             existing = self.db.execute(
-                "SELECT csum, size FROM media WHERE fname = ?", (filename,)
+                "SELECT csum, size FROM media_current WHERE fname = ?", (filename,)
             ).fetchone()
             
             if existing and existing[0] == csum_bytes:
                 action = "identical"
             else:
-                # Database-only operation - filesystem operations are handled separately in atomic method
                 try:
-                    # Update database within transaction
+                    # Add ADD operation to log
                     self.db.execute("""
-                        INSERT OR REPLACE INTO media (fname, csum, size, usn, mtime)
+                        INSERT INTO media_operations (usn, operation, fname, csum, size, timestamp)
+                        VALUES (?, 'add', ?, ?, ?, ?)
+                    """, (new_usn, filename, csum_bytes, file_size, current_time))
+                    
+                    # Update current state
+                    self.db.execute("""
+                        INSERT OR REPLACE INTO media_current (fname, csum, size, added_usn, mtime)
                         VALUES (?, ?, ?, ?, ?)
                     """, (filename, csum_bytes, file_size, new_usn, mtime))
                     
@@ -274,25 +341,25 @@ class ServerMediaDatabase:
                         self._update_meta_after_addition(file_size)
                         action = "added"
                     
-                    logger.debug(f"Database operation completed for {filename}: action={action}")
+                    logger.debug(f"Operation log entry created for {filename}: action={action}")
                     
                 except Exception as db_error:
                     # Database operation failed - rollback and re-raise
                     self.db.rollback()
-                    logger.error(f"Database operation failed for {filename}: {db_error}")
-                    raise ValueError(f"Database operation failed for {filename}: {db_error}")
+                    logger.error(f"Operation log failed for {filename}: {db_error}")
+                    raise ValueError(f"Operation log failed for {filename}: {db_error}")
         
-        # Update USN only for actual changes
+        # Update USN only for actual changes (this maintains the operation sequence)
         if action != "identical" and action != "already_deleted":
             self.db.execute("UPDATE meta SET last_usn = ?", (new_usn,))
-            logger.debug(f"🔍 MEDIA USN DEBUG: Updated USN from {current_usn} to {new_usn} for {filename}")
+            logger.debug(f"🔍 OPERATION LOG: Advanced USN from {current_usn} to {new_usn} for {filename}")
         
         # Commit all database changes - this makes the operation atomic
         self.db.commit()
-        logger.debug(f"Atomic operation completed for {filename}: action={action}")
+        logger.debug(f"Operation log entry committed for {filename}: action={action}")
         
         final_usn = new_usn if action not in ("identical", "already_deleted") else current_usn
-        logger.debug(f"🔍 MEDIA USN DEBUG: Returning action={action}, usn={final_usn} for {filename}")
+        logger.debug(f"🔍 OPERATION LOG: Returning action={action}, usn={final_usn} for {filename}")
         return action, final_usn
     
     def _update_meta_after_addition(self, file_size: int):
@@ -317,12 +384,6 @@ class ServerMediaDatabase:
                 total_nonempty_files = total_nonempty_files - 1
         """, (file_size,))
     
-    def reset_usn_to_align_with_collection(self, target_usn: int):
-        """Reset media USN to align with uploaded collection state."""
-        logger.info(f"🔍 MEDIA USN ALIGNMENT: Resetting server media USN from {self.last_usn()} to {target_usn}")
-        self.db.execute("UPDATE meta SET last_usn = ?", (target_usn,))
-        self.db.commit()
-        logger.info(f"🔍 MEDIA USN ALIGNMENT: Server media USN now set to {self.last_usn()}")
     
     def close(self):
         """Close the database connection."""
@@ -750,31 +811,32 @@ class MediaSyncHandler:
         }
     
     def media_changes(self, last_usn: int) -> Dict[str, Any]:
-        """Get media changes since the specified USN."""
+        """Get media operations since the specified USN from operation log."""
         try:
-            changes = self.media_manager.media_changes_chunk(last_usn)
-            current_server_usn = self.media_manager.last_usn() # Get current server media USN
+            operations = self.media_manager.media_changes_chunk(last_usn)
+            current_server_usn = self.media_manager.last_usn()
             
-            # Convert to the format expected by clients: [fname, usn, sha1]
-            change_list = [
-                [change["fname"], change["usn"], change["sha1"]]
-                for change in changes
+            # Convert operation log to client format: [fname, usn, sha1]
+            operation_list = [
+                [fname, usn, csum_hex] for fname, usn, csum_hex in operations
             ]
             
-            logger.info(f"🔍 MEDIA CHANGES DEBUG: client_last_usn={last_usn}, server_usn={current_server_usn}, changes_count={len(change_list)}")
-            if change_list:
-                logger.info(f"🔍 MEDIA CHANGES DEBUG: First few changes: {change_list[:5]}")
-                logger.info(f"🔍 MEDIA CHANGES DEBUG: Last change USN: {change_list[-1][1]}")
+            logger.info(f"🔍 OPERATION LOG: client_last_usn={last_usn}, server_usn={current_server_usn}, operations_count={len(operation_list)}")
+            if operation_list:
+                logger.info(f"🔍 OPERATION LOG: First few operations: {operation_list[:5]}")
+                logger.info(f"🔍 OPERATION LOG: Last operation USN: {operation_list[-1][1]}")
             
-            # Check for problematic large downloads that could cause 303 errors
-            if len(change_list) > 100:
-                logger.warning(f"🚨 LARGE MEDIA DOWNLOAD DETECTED: {len(change_list)} files requested from USN {last_usn} to {current_server_usn}")
-                logger.warning(f"🚨 This could indicate USN misalignment causing repeated large downloads that trigger 303 errors")
+            # This should now work correctly: client expects operations from last_usn+1 to current_usn
+            # With proper operation log: client_last_usn + operations_received = server_usn ✅
+            if operation_list:
+                expected_final_usn = last_usn + len(operation_list)
+                if expected_final_usn <= current_server_usn:
+                    logger.info(f"✅ OPERATION LOG MATH: {last_usn} + {len(operation_list)} = {expected_final_usn} ≤ {current_server_usn}")
+                else:
+                    logger.warning(f"⚠️ OPERATION LOG MATH: {last_usn} + {len(operation_list)} = {expected_final_usn} > {current_server_usn}")
             
-            # Return the change_list directly wrapped in JsonResult format
-            # The client expects Vec<MediaChange>, not a custom object
             return {
-                "data": change_list,
+                "data": operation_list,
                 "err": ""
             }
         except Exception as e:
