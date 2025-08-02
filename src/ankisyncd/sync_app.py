@@ -218,27 +218,21 @@ class SyncCollectionHandler(Syncer):
                 "msg": "Your client does not support the new timezone handling.",
             }
 
-        # Handle media connection properly based on collection type
+        # Get media USN from modern media manager (not collection's old media manager)
         media_usn = 0
         try:
-            if hasattr(self.col, 'media'):
-                # Direct collection object - use media directly
-                self.col.media.connect()
-                media_usn = self.col.media.lastUsn()
-                logger.debug(f"🔍 COLLECTION MEDIA USN: {media_usn} (direct access)")
-            elif hasattr(self.col, 'execute'):
-                # Collection wrapper - use execute method to access media
-                def get_media_usn(col):
-                    col.media.connect()
-                    return col.media.lastUsn()
-                media_usn = self.col.execute(get_media_usn, waitForReturn=True)
-                logger.debug(f"🔍 COLLECTION MEDIA USN: {media_usn} (via execute)")
-            else:
-                # Fallback - assume media USN is 0
-                logger.warning("Cannot access media from collection, using USN 0")
-                media_usn = 0
+            # Initialize modern media manager if not already done
+            if not self.media_manager:
+                user_folder = self.path
+                self.media_manager = ServerMediaManager(user_folder)
+                logger.debug(f"🔍 MEDIA USN: Initialized modern media manager for meta response")
+            
+            # Get USN from modern media manager (the one actually used for sync)
+            media_usn = self.media_manager.last_usn()
+            logger.debug(f"🔍 MEDIA USN: {media_usn} (from modern media manager)")
+            
         except Exception as e:
-            logger.warning(f"Failed to get media USN: {e}, using 0")
+            logger.warning(f"Failed to get media USN from modern media manager: {e}, using 0")
             media_usn = 0
         
         # Get collection timestamps

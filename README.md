@@ -112,6 +112,7 @@ All steps run inside a **single WAL-protected transaction**; on any error the da
 * **Locked writes** ensure two devices never overwrite each other's work mid-sync.
 * **Crash resilience** - separated storage for collections and media enables recovery from server failures.
 * **Differential media sync** - only transfers changed files using USN tracking, not full collections.
+* **Modern media USN handling** - unified media manager ensures precise USN tracking that matches client expectations.
 * **Schema compatibility** - robust fallback mechanisms handle corrupted or missing collection databases.
 
 ---
@@ -367,6 +368,12 @@ The project includes several deployment and management scripts:
 - **Issue**: Modern clients stream request bodies without `Content-Length` headers using chunked transfer encoding
 - **Fix**: Enhanced request parsing to handle chunked transfer encoding and missing content-length headers
 
+#### 4. Media USN Synchronization (303 Error Fix)
+- **Issue**: Server's media USN didn't match client expectations, causing 303 stream failure errors
+- **Root Cause**: Legacy media manager and modern media manager had inconsistent USN values
+- **Fix**: Unified all media sync operations to use the modern media manager (`media_manager.py`) with atomic USN tracking
+- **Result**: Server USN now precisely reflects the number of media operations, matching client expectations
+
 ### Common Error Patterns & Solutions
 
 | Error | Cause | Solution |
@@ -378,6 +385,7 @@ The project includes several deployment and management scripts:
 | `NoneType object has no attribute 'scalar'` | Collection database corrupted/missing | Server auto-recovers with schema fallback; client uploads restore collection |
 | Server reports "no collections" but has media | Database inconsistency after crash | Normal - media databases survive restarts; collection upload restores sync |
 | Quick sync with thousands of media files | Efficient differential sync working correctly | Expected behavior - only transfers changed files (USN-based) |
+| `303 stream failure` during media sync | Media USN mismatch between client/server | Fixed: Modern media manager ensures precise USN tracking |
 
 ### Quick Recovery Commands
 ```bash

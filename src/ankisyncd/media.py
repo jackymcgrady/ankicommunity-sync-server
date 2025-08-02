@@ -1,6 +1,10 @@
 # Based on anki.media.MediaManager, © Ankitects Pty Ltd and contributors
 # License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 # Original source: https://raw.githubusercontent.com/dae/anki/62481ddc1aa78430cb8114cbf00a7739824318a8/anki/media.py
+#
+# LEGACY: This ServerMediaManager is used as the collection's media manager for
+# basic collection operations. The actual sync operations now use the modern
+# media_manager.py which provides proper USN tracking and atomic operations.
 
 import logging
 import re
