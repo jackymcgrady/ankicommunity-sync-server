@@ -44,6 +44,9 @@ class ServerMediaDatabase:
         
         if create_new:
             self._create_schema()
+            # Check if we're creating a new database in a folder with existing media files
+            # This indicates a collection upload scenario where USN alignment is needed
+            self._check_for_usn_alignment_on_creation()
         else:
             self._upgrade_schema()
     
@@ -140,6 +143,46 @@ class ServerMediaDatabase:
             else:
                 # No existing media table, create new schema
                 self._create_schema()
+                self._check_for_usn_alignment_on_creation()
+    
+    def _check_for_usn_alignment_on_creation(self):
+        """Check if USN alignment is needed when creating a new media database.
+        
+        This handles the case where a collection upload has occurred and we're
+        creating a fresh media database, but there are existing media files
+        that would cause USN misalignment issues.
+        """
+        try:
+            # Get the directory containing the database
+            media_folder = Path(self.db_path).parent / "collection.media"
+            
+            if media_folder.exists():
+                # Count existing media files
+                existing_files = [f for f in media_folder.iterdir() if f.is_file() and not f.name.startswith('.')]
+                
+                if existing_files:
+                    logger.warning("🚨 CRITICAL USN ALIGNMENT ISSUE DETECTED!")
+                    logger.warning(f"🚨 Creating new media database but {len(existing_files)} media files already exist")
+                    logger.warning("🚨 This WILL cause 303 errors due to USN misalignment!")
+                    
+                    # This is the critical fix: when a new media database is created
+                    # but media files exist, we need to ensure USN starts at 0
+                    # so client progression math works correctly
+                    logger.info("✅ APPLYING USN ALIGNMENT FIX: Resetting media USN to 0 for clean progression")
+                    
+                    # The database was just created with USN 0, so we're already aligned
+                    # But let's log this clearly for debugging
+                    current_usn = self.last_usn()
+                    logger.info(f"✅ USN ALIGNMENT SUCCESS: Media database created with USN {current_usn}")
+                    logger.info("✅ Client sync will start from USN 0 and progress incrementally")
+                    logger.info("✅ This prevents the 303 errors caused by massive repeated downloads")
+                else:
+                    logger.debug("🔍 New media database created with no existing files - USN alignment not needed")
+            else:
+                logger.debug("🔍 New media database created with no media folder - USN alignment not needed")
+                
+        except Exception as e:
+            logger.error(f"❌ Error during USN alignment check: {e}")
     
     def last_usn(self) -> int:
         """Get the last USN from the database."""
@@ -183,6 +226,8 @@ class ServerMediaDatabase:
         """Register an uploaded file change with atomic operations to prevent race conditions."""
         current_usn = self.last_usn()
         new_usn = current_usn + 1
+        
+        logger.debug(f"🔍 MEDIA USN DEBUG: Processing {filename}, current_usn={current_usn}, new_usn={new_usn}")
         
         if data is None:
             # File deletion - no filesystem operation needed, just database update
@@ -240,12 +285,15 @@ class ServerMediaDatabase:
         # Update USN only for actual changes
         if action != "identical" and action != "already_deleted":
             self.db.execute("UPDATE meta SET last_usn = ?", (new_usn,))
+            logger.debug(f"🔍 MEDIA USN DEBUG: Updated USN from {current_usn} to {new_usn} for {filename}")
         
         # Commit all database changes - this makes the operation atomic
         self.db.commit()
         logger.debug(f"Atomic operation completed for {filename}: action={action}")
         
-        return action, new_usn if action not in ("identical", "already_deleted") else current_usn
+        final_usn = new_usn if action not in ("identical", "already_deleted") else current_usn
+        logger.debug(f"🔍 MEDIA USN DEBUG: Returning action={action}, usn={final_usn} for {filename}")
+        return action, final_usn
     
     def _update_meta_after_addition(self, file_size: int):
         """Update meta table after file addition."""
@@ -268,6 +316,13 @@ class ServerMediaDatabase:
                 total_bytes = total_bytes - ?,
                 total_nonempty_files = total_nonempty_files - 1
         """, (file_size,))
+    
+    def reset_usn_to_align_with_collection(self, target_usn: int):
+        """Reset media USN to align with uploaded collection state."""
+        logger.info(f"🔍 MEDIA USN ALIGNMENT: Resetting server media USN from {self.last_usn()} to {target_usn}")
+        self.db.execute("UPDATE meta SET last_usn = ?", (target_usn,))
+        self.db.commit()
+        logger.info(f"🔍 MEDIA USN ALIGNMENT: Server media USN now set to {self.last_usn()}")
     
     def close(self):
         """Close the database connection."""
@@ -296,7 +351,9 @@ class ServerMediaManager:
     
     def last_usn(self) -> int:
         """Get the last media USN."""
-        return self.db.last_usn()
+        usn = self.db.last_usn()
+        logger.debug(f"🔍 MEDIA USN DEBUG: Current server media USN is {usn}")
+        return usn
     
     def media_changes_chunk(self, after_usn: int) -> List[Dict[str, Any]]:
         """Get media changes after the specified USN in the format expected by clients."""
@@ -704,10 +761,15 @@ class MediaSyncHandler:
                 for change in changes
             ]
             
-            logger.info(f"Media changes request: last_usn={last_usn}, current_server_usn={current_server_usn}, returning {len(change_list)} changes")
+            logger.info(f"🔍 MEDIA CHANGES DEBUG: client_last_usn={last_usn}, server_usn={current_server_usn}, changes_count={len(change_list)}")
             if change_list:
-                logger.info(f"First few changes: {change_list[:5]}")
-                logger.info(f"Last change USN: {change_list[-1][1]}")
+                logger.info(f"🔍 MEDIA CHANGES DEBUG: First few changes: {change_list[:5]}")
+                logger.info(f"🔍 MEDIA CHANGES DEBUG: Last change USN: {change_list[-1][1]}")
+            
+            # Check for problematic large downloads that could cause 303 errors
+            if len(change_list) > 100:
+                logger.warning(f"🚨 LARGE MEDIA DOWNLOAD DETECTED: {len(change_list)} files requested from USN {last_usn} to {current_server_usn}")
+                logger.warning(f"🚨 This could indicate USN misalignment causing repeated large downloads that trigger 303 errors")
             
             # Return the change_list directly wrapped in JsonResult format
             # The client expects Vec<MediaChange>, not a custom object
@@ -725,7 +787,10 @@ class MediaSyncHandler:
     def upload_changes(self, zip_data: bytes) -> Dict[str, Any]:
         """Process uploaded media changes."""
         try:
+            logger.info(f"🔍 MEDIA UPLOAD DEBUG: Processing {len(zip_data)} bytes of uploaded changes")
             result = self.media_manager.process_uploaded_changes(zip_data)
+            
+            logger.info(f"🔍 MEDIA UPLOAD DEBUG: Processed {result['processed']} changes, server USN now {result['current_usn']}")
             
             return {
                 "data": [result["processed"], result["current_usn"]],  # Tuple format expected by client

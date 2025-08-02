@@ -225,12 +225,14 @@ class SyncCollectionHandler(Syncer):
                 # Direct collection object - use media directly
                 self.col.media.connect()
                 media_usn = self.col.media.lastUsn()
+                logger.debug(f"🔍 COLLECTION MEDIA USN: {media_usn} (direct access)")
             elif hasattr(self.col, 'execute'):
                 # Collection wrapper - use execute method to access media
                 def get_media_usn(col):
                     col.media.connect()
                     return col.media.lastUsn()
                 media_usn = self.col.execute(get_media_usn, waitForReturn=True)
+                logger.debug(f"🔍 COLLECTION MEDIA USN: {media_usn} (via execute)")
             else:
                 # Fallback - assume media USN is 0
                 logger.warning("Cannot access media from collection, using USN 0")
@@ -281,7 +283,7 @@ class SyncCollectionHandler(Syncer):
             "scm": schema_change,
             "usn": self.col.usn(),
             "ts": anki.utils.int_time(),
-            "media_usn": media_usn,
+            "media_usn": media_usn,  # Collection's media USN for sync coordination
             "msg": "",
             "cont": True,
             "hostNum": 0,  # Deprecated in v11+ but kept for compatibility
@@ -461,7 +463,7 @@ class SyncUserSession:
         elif operation in ["begin", "mediaChanges", "mediaSanity", "uploadChanges", "downloadFiles"]:
             if not self.media_handler:
                 # Initialize modern media manager with the user's directory path
-                # self.path is already the user directory (e.g., ./collections/users/test)
+                # self.path is already the user directory (e.g., /data/collections/huyuping)
                 user_folder = self.path
                 self.media_manager = ServerMediaManager(user_folder)
                 self.media_handler = MediaSyncHandler(self.media_manager, self)

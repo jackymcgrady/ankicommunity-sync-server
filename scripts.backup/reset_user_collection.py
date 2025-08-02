@@ -241,33 +241,6 @@ class UserCollectionResetter:
                     errors.append(error_msg)
                     logger.error(error_msg)
         
-        # 3b. CRITICAL: Also remove media database from Docker container
-        if not dry_run:
-            try:
-                import subprocess
-                container_user_path = f"/data/collections/{username}"
-                logger.info(f"Removing media database from Docker container for user: {username}")
-                
-                # Remove all media database files from container
-                result = subprocess.run([
-                    "docker", "exec", "anki-sync-server-nginx", "bash", "-c",
-                    f"rm -f {container_user_path}/collection.media.server.db*"
-                ], check=False, capture_output=True, text=True)
-                
-                # Also remove any stale media files from container and clean up old paths
-                subprocess.run([
-                    "docker", "exec", "anki-sync-server-nginx", "bash", "-c", 
-                    f"rm -rf {container_user_path}/collection.media/* && mkdir -p {container_user_path}/collection.media && rm -rf /data/collections/users/{username}"
-                ], check=False, capture_output=True, text=True)
-                
-                operations.append("Removed media database from Docker container")
-                logger.info("Successfully removed media database from Docker container")
-                
-            except Exception as e:
-                error_msg = f"Failed to remove media database from container: {e}"
-                errors.append(error_msg)
-                logger.error(error_msg)
-        
         # 4. Remove any other temporary or backup files
         temp_patterns = ["*.tmp", "*.bak", "*.backup", "*~"]
         for pattern in temp_patterns:
