@@ -222,14 +222,14 @@ class SyncCollectionHandler(Syncer):
         media_usn = 0
         try:
             # Initialize modern media manager if not already done
-            if not self.media_manager:
-                user_folder = self.path
+            if not hasattr(self, 'media_manager') or not self.media_manager:
+                user_folder = self.session.path
                 self.media_manager = ServerMediaManager(user_folder)
-                logger.debug(f"🔍 MEDIA USN: Initialized modern media manager for meta response")
+                logger.debug(f"Initialized modern media manager for meta response")
             
             # Get USN from modern media manager (the one actually used for sync)
             media_usn = self.media_manager.last_usn()
-            logger.debug(f"🔍 MEDIA USN: {media_usn} (from modern media manager)")
+            logger.debug(f"Media USN from modern media manager: {media_usn}")
             
         except Exception as e:
             logger.warning(f"Failed to get media USN from modern media manager: {e}, using 0")
@@ -459,7 +459,9 @@ class SyncUserSession:
                 # Initialize modern media manager with the user's directory path
                 # self.path is already the user directory (e.g., /data/collections/huyuping)
                 user_folder = self.path
-                self.media_manager = ServerMediaManager(user_folder)
+                # Reuse the same media manager instance if it exists
+                if not hasattr(self, 'media_manager') or not self.media_manager:
+                    self.media_manager = ServerMediaManager(user_folder)
                 self.media_handler = MediaSyncHandler(self.media_manager, self)
             return self.media_handler
         else:

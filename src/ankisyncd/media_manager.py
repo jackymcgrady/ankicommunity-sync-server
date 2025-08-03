@@ -818,12 +818,12 @@ class MediaSyncHandler:
             
             # Convert operation log to client format: [fname, usn, sha1]
             operation_list = [
-                [fname, usn, csum_hex] for fname, usn, csum_hex in operations
+                [op['fname'], op['usn'], op['sha1']] for op in operations
             ]
             
             logger.info(f"🔍 OPERATION LOG: client_last_usn={last_usn}, server_usn={current_server_usn}, operations_count={len(operation_list)}")
             if operation_list:
-                logger.info(f"🔍 OPERATION LOG: First few operations: {operation_list[:5]}")
+                logger.info(f"🔍 OPERATION LOG: First few operations: {operation_list[:3]}")
                 logger.info(f"🔍 OPERATION LOG: Last operation USN: {operation_list[-1][1]}")
             
             # This should now work correctly: client expects operations from last_usn+1 to current_usn
