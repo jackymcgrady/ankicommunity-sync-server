@@ -374,6 +374,17 @@ The project includes several deployment and management scripts:
 - **Fix**: Unified all media sync operations to use the modern media manager (`media_manager.py`) with atomic USN tracking
 - **Result**: Server USN now precisely reflects the number of media operations, matching client expectations
 
+#### 5. Media Sync Compression for Modern Clients (v11+ Protocol)
+- **Issue**: Modern Anki clients (sync protocol v11+) expect media ZIP files to be zstd-compressed but server returned raw ZIP data
+- **Root Cause**: Server's `downloadFiles` operation wasn't compressing media payload for clients that advertise sync version ≥ 11
+- **Symptoms**: Second client could receive collection data but media downloads would fail during decompression
+- **Fix**: Implemented version-aware compression - zstd compress media ZIP for v11+ clients, raw ZIP for legacy clients
+- **Technical Details**: 
+  - Modern clients send `anki-sync: {"v":11,...}` header and expect zstd-compressed body with `anki-original-size` header
+  - Server now checks `req.get_sync_version() >= 11` and applies `zstd.ZstdCompressor().compress()` accordingly
+  - Maintains backward compatibility for older clients that expect uncompressed ZIP files
+- **Result**: Media sync now works correctly for all modern Anki clients while preserving legacy client support
+
 ### Common Error Patterns & Solutions
 
 | Error | Cause | Solution |

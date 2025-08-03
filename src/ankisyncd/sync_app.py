@@ -1016,8 +1016,21 @@ class SyncApp:
                 logger.error(f"Error processing downloadFiles request: {e}")
                 result = handler.download_files([])
             
-            # Return raw zip data with original size for chunked decorator
-            return (result, len(result))
+            # Convert result to bytes if needed
+            raw_payload = (
+                result if isinstance(result, (bytes, bytearray)) else bytes(result)
+            )
+            orig_size = len(raw_payload)
+
+            # Only clients with v>=11 expect zstd compression
+            if req.get_sync_version() >= 11:
+                compressed = zstd.ZstdCompressor().compress(raw_payload)
+                logger.info(f"downloadFiles: compressed {orig_size} bytes to {len(compressed)} bytes for sync version {req.get_sync_version()}")
+                return compressed, orig_size
+            else:
+                # Legacy clients (<v11): leave uncompressed
+                logger.info(f"downloadFiles: returning uncompressed {orig_size} bytes for sync version {req.get_sync_version()}")
+                return raw_payload, orig_size
             
         elif operation == "mediaSanity":
             try:
@@ -1033,12 +1046,6 @@ class SyncApp:
                 local_count = 0
             
             result = handler.media_sanity(local_count)
-
-        # Build response payload and ensure anki-original-size header is included
-        if operation == "downloadFiles":
-            # Binary zip data - don't double-compress, but still include size header
-            payload = result if isinstance(result, (bytes, bytearray)) else bytes(result)
-            return payload, len(payload)
 
         # For JSON responses, compress with zstd to match modern Anki expectations
         # and return (compressed, original_size)
