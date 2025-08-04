@@ -372,3 +372,11 @@ src/ankisyncd.cognito.conf
 
 # Ignore EFS mount point (collection and media files)
 /efs/
+
+# Ignore backup directories and files
+/scripts.backup/
+*.backup
+
+# Ignore generated certificates and dumps
+certbot-www/
+db_migration/migration_backups/
