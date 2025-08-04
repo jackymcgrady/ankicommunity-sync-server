@@ -392,12 +392,14 @@ class SyncCollectionHandler(Syncer):
         )
 
         for oid, type in curs:
+            # Convert oid to string as expected by Anki's sync protocol
+            oid_str = str(oid)
             if type == REM_CARD:
-                cards.append(oid)
+                cards.append(oid_str)
             elif type == REM_NOTE:
-                notes.append(oid)
+                notes.append(oid_str)
             else:
-                decks.append(oid)
+                decks.append(oid_str)
 
         return dict(cards=cards, notes=notes, decks=decks)
 
@@ -691,7 +693,8 @@ class chunked(object):
                     resp.headers['Content-Length'] = str(len(w)) # Explicitly set Content-Length
                     logger.info(f"Auto-added anki-original-size header: {len(w)} bytes")
                 else:
-                    resp = Response(w)
+                    # w is already a Response object
+                    resp = w
 
             return resp(environ, start_response)
         except HTTPBadRequest as e:
@@ -1049,6 +1052,33 @@ class SyncApp:
 
         # For JSON responses, compress with zstd to match modern Anki expectations
         # and return (compressed, original_size)
+        
+        # Debug: Search for the problematic integer value 1090421990
+        if operation in ["chunk", "applyChanges", "start", "meta"]:
+            logger.info(f"🔍 DEBUG: {operation} result type: {type(result)}")
+            
+            # Search for the problematic integer value
+            result_str = str(result)
+            if "1090421990" in result_str:
+                logger.error(f"🔍 FOUND PROBLEMATIC INTEGER 1090421990 in {operation} result!")
+                logger.error(f"🔍 Full result structure: {result}")
+                
+                # Try to find it in the JSON
+                json_str = json.dumps(result)
+                pos = json_str.find('1090421990')
+                if pos >= 0:
+                    logger.error(f"🔍 INTEGER 1090421990 found in JSON at position {pos}")
+                    logger.error(f"🔍 JSON context around position: '{json_str[max(0, pos-50):pos+100]}'")
+                    
+                    # Try to identify the field name by looking backwards for the key
+                    context_before = json_str[max(0, pos-100):pos]
+                    import re
+                    field_match = re.search(r'"([^"]+)"\s*:\s*$', context_before)
+                    if field_match:
+                        logger.error(f"🔍 Field containing 1090421990: '{field_match.group(1)}'")
+                else:
+                    logger.error(f"🔍 INTEGER found in result but not in JSON - might be converted during serialization")
+        
         json_payload = json.dumps(result).encode("utf-8")
         orig_size = len(json_payload)
         compressed = zstd.ZstdCompressor().compress(json_payload)

@@ -385,6 +385,28 @@ The project includes several deployment and management scripts:
   - Maintains backward compatibility for older clients that expect uncompressed ZIP files
 - **Result**: Media sync now works correctly for all modern Anki clients while preserving legacy client support
 
+#### 6. JSON Field Type Compatibility (Critical Protocol Fix)
+- **Issue**: JsonError with "invalid type: integer X, expected a string" or "invalid type: string X, expected i64"
+- **Root Cause**: Anki's sync protocol has specific requirements for field serialization that differ from database storage types
+- **Symptoms**: 
+  - Client receives `JsonError { info: "invalid type: integer 1090421990, expected a string" }` 
+  - Sync fails after successful authentication but before data transfer completes
+- **Fix**: Implemented field-specific type conversion in sync responses:
+  - **Table dumps (chunk data)**: Most fields remain as integers (IDs, timestamps, USN)
+  - **Graves (deletion records)**: Object IDs must be strings for cross-platform compatibility
+  - **Checksum fields**: `csum` field converted to string due to JavaScript 53-bit integer precision limits
+- **Technical Details**:
+  ```python
+  # Example: notes table csum field conversion
+  if field_name == 'csum' and isinstance(value, int):
+      converted_value = str(value)  # "1090421990" instead of 1090421990
+  ```
+- **Protocol Rules Discovered**:
+  - **Graves**: All object IDs (oid) serialized as strings
+  - **Chunk data**: IDs stay as integers, but csum becomes string
+  - **Timestamps**: Always integers (mod, due, usn, etc.)
+- **Result**: Eliminates JSON deserialization errors and enables successful sync for modern Anki clients
+
 ### Common Error Patterns & Solutions
 
 | Error | Cause | Solution |

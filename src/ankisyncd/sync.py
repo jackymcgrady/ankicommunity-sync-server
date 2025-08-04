@@ -281,7 +281,7 @@ select id from notes where mid = ?) limit 1"""
             fields = self.schema_updater.get_query_fields("revlog")
             # Replace usn placeholder with actual value
             fields_with_usn = fields.replace("usn", "?")
-            return self.col.db.execute(
+            result = self.col.db.execute(
                 f"select {fields_with_usn} from revlog where {lim}",
                 self.maxUsn,
             )
@@ -289,7 +289,7 @@ select id from notes where mid = ?) limit 1"""
             fields = self.schema_updater.get_query_fields("cards")
             # Replace usn placeholder with actual value
             fields_with_usn = fields.replace("usn", "?")
-            return self.col.db.execute(
+            result = self.col.db.execute(
                 f"select {fields_with_usn} from cards where {lim}",
                 self.maxUsn,
             )
@@ -297,10 +297,34 @@ select id from notes where mid = ?) limit 1"""
             fields = self.schema_updater.get_query_fields("notes")
             # Replace usn placeholder with actual value
             fields_with_usn = fields.replace("usn", "?")
-            return self.col.db.execute(
+            result = self.col.db.execute(
                 f"select {fields_with_usn} from notes where {lim}",
                 self.maxUsn,
             )
+        
+        # Convert result to list and handle specific fields that need string conversion
+        # Most fields stay as integers, but csum needs to be string for sync compatibility
+        rows = []
+        field_list = self.schema_updater._field_mappings.get(table, [])
+        
+        for row in result:
+            converted_row = []
+            for i, value in enumerate(row):
+                # Convert csum field to string for sync protocol compatibility
+                # csum is stored as integer in DB but serialized as string in JSON
+                if (i < len(field_list) and 
+                    field_list[i] == 'csum' and  
+                    isinstance(value, int)):
+                    converted_row.append(str(value))
+                    # Debug: Log the conversion
+                    if value == 1090421990:
+                        logger.info(f"🔍 CONVERTED csum {value} to string for sync compatibility")
+                else:
+                    converted_row.append(value)
+            
+            rows.append(converted_row)
+        
+        return rows
 
     def chunk(self):
         buf = dict(done=False)
