@@ -257,7 +257,7 @@ class UserCollectionResetter:
                 # Also remove any stale media files from container and clean up old paths
                 subprocess.run([
                     "docker", "exec", "anki-sync-server-nginx", "bash", "-c", 
-                    f"rm -rf {container_user_path}/collection.media/* && mkdir -p {container_user_path}/collection.media && rm -rf /data/collections/users/{username}"
+                    f"rm -rf {container_user_path}/collection.media/* && mkdir -p {container_user_path}/collection.media"
                 ], check=False, capture_output=True, text=True)
                 
                 operations.append("Removed media database from Docker container")

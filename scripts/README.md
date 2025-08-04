@@ -149,13 +149,13 @@ After running the reset script:
 
 ### User Not Found
 ```
-ERROR - User 'username' does not exist in /data/collections/users
+ERROR - User 'username' does not exist in /data/collections
 ```
 **Solution**: Check the username spelling and ensure the user has synced at least once.
 
 ### Permission Errors
 ```
-Failed to remove /data/collections/users/username/collection.anki2: Permission denied
+Failed to remove /data/collections/username/collection.anki2: Permission denied
 ```
 **Solution**: Ensure the script is running with appropriate permissions inside the Docker container.
 

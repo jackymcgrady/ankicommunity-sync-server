@@ -204,7 +204,7 @@ curl -k https://localhost/sync/hostKey  # Test endpoint
 ```
 
 **AWS Cognito Integration**:
-- Collection folders: `/data/collections/users/{cognito_username}/`
+- Collection folders: `/data/collections/{cognito_username}/`
 - Session caching reduces API calls  
 - Supports multiple auth flows (`USER_PASSWORD_AUTH`, `ADMIN_NO_SRP_AUTH`)
 
@@ -235,7 +235,7 @@ ANKISYNCD_COGNITO_CLIENT_SECRET=your_client_secret
 ### Collection Directory Structure
 When users authenticate, collections are automatically organized by Cognito username:
 ```
-/data/collections/users/
+/data/collections/
 ├── john.doe/           # Cognito username (not email)
 │   ├── collection.anki2
 │   └── collection.media/
@@ -318,7 +318,7 @@ anki-sync-server-nginx  (internal port 27702)
     ↓ authenticates via ↓  
 AWS Cognito User Pool
     ↓ stores collections in ↓
-./data/collections/users/{cognito_username}/
+./data/collections/{cognito_username}/
 ```
 
 ---
