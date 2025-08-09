@@ -90,9 +90,25 @@ Volumes that **must** persist:
 | `missing original_size` header | zstd responses must include it | server code handles this – pull latest image |
 | `303 stream failure` in media sync | media USN mismatch | fixed by unified media manager |
 | `JsonError invalid type` | field type mismatch | server converts `csum` & graves correctly in latest build |
-| `SSL certificate error` | self-signed cert rejected | use Let’s Encrypt or import cert into trust store |
+| `SSL certificate error` | self-signed cert rejected | use Let's Encrypt or import cert into trust store |
+| Media sync stuck at "checked: 250" | Client trapped requesting removed files | Reset user: `python3 scripts/reset_user_collection.py <username> --confirm --data-root ./data` |
 
-Useful commands:
+### Media Sync Issues
+
+**Problem**: Media sync stuck at "checked: X" with repeated `downloadFiles` requests for non-existent files.
+
+**Root Cause**: After relogin, client's local database may reference files that were removed from server, causing infinite retry loops.
+
+**Solution**:
+```bash
+# Reset user's media sync state completely
+python3 scripts/reset_user_collection.py <username> --confirm --data-root ./data
+
+# Restart container to ensure clean state
+docker-compose -f docker-compose.latest.yml restart anki-sync-server
+```
+
+**Useful debugging commands**:
 
 ```bash
 docker logs anki-sync-server-nginx --tail 20

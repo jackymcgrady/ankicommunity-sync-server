@@ -554,34 +554,47 @@ class ServerMediaManager:
                     if len(file_map) >= MAX_MEDIA_FILES_IN_ZIP:
                         break
                 else:
-                    # Fallback: search for an NFC-normalized filename match on disk
+                    # Check if this file has been explicitly removed from the server
+                    # If so, don't try NFC fallback as it wastes time and causes loops
                     try:
-                        alt_path = None
-                        target = None
-                        try:
-                            target = unicodedata.normalize("NFC", filename)
-                        except Exception:
-                            target = filename
-                        for p in self.media_folder.iterdir():
+                        removed_check = self.db.db.execute("""
+                            SELECT operation FROM media_operations 
+                            WHERE fname = ? 
+                            ORDER BY usn DESC 
+                            LIMIT 1
+                        """, (filename,)).fetchone()
+                        
+                        if removed_check and removed_check[0] == 'remove':
+                            logger.debug(f"File {filename} was explicitly removed, skipping NFC fallback")
+                        else:
+                            # Fallback: search for an NFC-normalized filename match on disk
+                            alt_path = None
+                            target = None
                             try:
-                                if unicodedata.normalize("NFC", p.name) == target:
-                                    alt_path = p
-                                    break
+                                target = unicodedata.normalize("NFC", filename)
                             except Exception:
+                                target = filename
+                            for p in self.media_folder.iterdir():
+                                try:
+                                    if unicodedata.normalize("NFC", p.name) == target:
+                                        alt_path = p
+                                        break
+                                except Exception:
+                                    continue
+                            if alt_path and alt_path.is_file():
+                                zip_name = str(i)
+                                zf.write(alt_path, zip_name)
+                                file_map[zip_name] = filename
+                                found_files += 1
+                                logger.info(f"Added file via NFC fallback {found_files}: {alt_path.name} as {filename} -> {zip_name}")
+                                if zip_buffer.tell() > MEDIA_SYNC_TARGET_ZIP_BYTES:
+                                    break
+                                if len(file_map) >= MAX_MEDIA_FILES_IN_ZIP:
+                                    break
                                 continue
-                        if alt_path and alt_path.is_file():
-                            zip_name = str(i)
-                            zf.write(alt_path, zip_name)
-                            file_map[zip_name] = filename
-                            found_files += 1
-                            logger.info(f"Added file via NFC fallback {found_files}: {alt_path.name} as {filename} -> {zip_name}")
-                            if zip_buffer.tell() > MEDIA_SYNC_TARGET_ZIP_BYTES:
-                                break
-                            if len(file_map) >= MAX_MEDIA_FILES_IN_ZIP:
-                                break
-                            continue
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Error checking removal status for {filename}: {e}")
+                    
                     logger.warning(f"Requested file not found: {filename} (path: {file_path})")
             
             # Add metadata file with proper mapping
