@@ -147,6 +147,11 @@ class ServerMediaDatabase:
                     current_time = int(time.time())
                     
                     for i, (fname, csum, size, mtime) in enumerate(existing_files, 1):
+                        # Normalize filename to NFC for protocol/database consistency
+                        try:
+                            fname = unicodedata.normalize("NFC", fname)
+                        except Exception:
+                            pass
                         # Each existing file becomes an ADD operation with sequential USN
                         self.db.execute("""
                             INSERT INTO media_operations (usn, operation, fname, csum, size, timestamp)
@@ -208,6 +213,11 @@ class ServerMediaDatabase:
                     current_time = int(time.time())
                     
                     for i, (fname, csum, size, mtime) in enumerate(existing_files, 1):
+                        # Normalize filename to NFC for protocol/database consistency
+                        try:
+                            fname = unicodedata.normalize("NFC", fname)
+                        except Exception:
+                            pass
                         # Each existing file becomes an ADD operation with sequential USN
                         self.db.execute("""
                             INSERT INTO media_operations (usn, operation, fname, csum, size, timestamp)
@@ -420,7 +430,7 @@ class ServerMediaManager:
         """Get media changes after the specified USN in the format expected by clients."""
         changes = self.db.media_changes_chunk(after_usn)
         return [
-            {"fname": fname, "usn": usn, "sha1": csum}
+            {"fname": fname, "usn": usn, "sha1": (csum.lower() if isinstance(csum, str) else csum)}
             for fname, usn, csum in changes
         ]
     
@@ -544,11 +554,35 @@ class ServerMediaManager:
                     if len(file_map) >= MAX_MEDIA_FILES_IN_ZIP:
                         break
                 else:
+                    # Fallback: search for an NFC-normalized filename match on disk
+                    try:
+                        alt_path = None
+                        target = None
+                        try:
+                            target = unicodedata.normalize("NFC", filename)
+                        except Exception:
+                            target = filename
+                        for p in self.media_folder.iterdir():
+                            try:
+                                if unicodedata.normalize("NFC", p.name) == target:
+                                    alt_path = p
+                                    break
+                            except Exception:
+                                continue
+                        if alt_path and alt_path.is_file():
+                            zip_name = str(i)
+                            zf.write(alt_path, zip_name)
+                            file_map[zip_name] = filename
+                            found_files += 1
+                            logger.info(f"Added file via NFC fallback {found_files}: {alt_path.name} as {filename} -> {zip_name}")
+                            if zip_buffer.tell() > MEDIA_SYNC_TARGET_ZIP_BYTES:
+                                break
+                            if len(file_map) >= MAX_MEDIA_FILES_IN_ZIP:
+                                break
+                            continue
+                    except Exception:
+                        pass
                     logger.warning(f"Requested file not found: {filename} (path: {file_path})")
-                    # For missing files, we need to tell the client they don't exist
-                    # The client expects to advance by the number of files processed
-                    # So we'll create a placeholder entry in metadata that indicates this file doesn't exist
-                    # But we won't add any actual file data to the zip
             
             # Add metadata file with proper mapping
             # The client uses this to map zip entries back to filenames
