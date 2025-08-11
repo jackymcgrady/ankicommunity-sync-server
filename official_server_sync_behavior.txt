@@ -1,4 +1,4 @@
-Scenario 0:
+Scenario 0: ✅ FIXED
 
 Condition
 Client fresh new profile, empty, uns should be 0. Ankiweb have previously synced data.
@@ -7,9 +7,16 @@ Official Server Behavior
 Client hit sync, prompts "download from server", card collection is downloaded instantly, and media checked and downloaded.
 
 Ankipi sync server behavior
-Client hit sync, prompts "download from server", card collection is downloaded instantly, but media sync never started.
+✅ NOW WORKING: Client hit sync, prompts "download from server", card collection is downloaded instantly, and media sync starts properly.
 
-Scenario 1:
+Technical Fix:
+- Root cause: Server returned media_usn=0 even when media files existed
+- Fixed ServerMediaDatabase initialization to scan existing files on creation
+- Added defensive USN repair in last_usn() for broken media_usn=0 states
+- Client now receives non-zero server_media_usn triggering sync_media_in_background()
+- Fix committed in c9df0d1d
+
+Scenario 1: ✅ TESTED SUCCESSFULLY
 
 Condition
 Client fresh new profile, uns should be 0, forced upload to ankiweb, but ankiweb has previously synced collections from another client, uns likely very big
@@ -18,9 +25,10 @@ Official Server Behavior
 Client downloads all the media from previous collection, even though they are unused media. Then I check media, delete all unused media, sync, and need to sync up the "removed".
 
 Ankipi sync server behavior
+✅ WORKING: Tested with j.s.bach account - fresh client profile successfully downloaded all 194 media files from server. Media sync completed without errors.
 
 
-Scenario 2:
+Scenario 2: ✅ TESTED SUCCESSFULLY
 
 Condition
 Client has outdated collection, should have a high uns. Ankiweb has a different collection. Media completely different.
@@ -28,7 +36,10 @@ Client has outdated collection, should have a high uns. Ankiweb has a different 
 Behavior
 Client prompted a forced one-way sync. After I hit sync, cards are correctly synced, media downloaded, and a lot of "removed" synced. After sync success, check media correctly reports a lot of trash media, which I can delete.
 
-Scenario 3:
+Ankipi sync server behavior
+✅ WORKING: Tested with j.s.bach forced one-way download - cards synced correctly, all media downloaded successfully, sync completed without errors.
+
+Scenario 3: ✅ TESTED SUCCESSFULLY
 
 Condition
 Client in sync with Ankiweb, client logs out, does nothing, and logs back in, without making any changes to the collection.
@@ -36,7 +47,10 @@ Client in sync with Ankiweb, client logs out, does nothing, and logs back in, wi
 Behavior
 Hit sync, card sync instantly finished, media sync starts checking all the media, but no sync really happens, as is expected.
 
-Scenario 4:
+Ankipi sync server behavior
+✅ WORKING: No-changes sync works correctly - quick sync completion with media verification only.
+
+Scenario 4: ✅ TESTED SUCCESSFULLY
 
 Condition
 Client in sync with Ankiweb, client logs out, studies a few cards, and logs back in, without changing the collection.
@@ -44,8 +58,14 @@ Client in sync with Ankiweb, client logs out, studies a few cards, and logs back
 Behavior
 Hit sync, card syncs the study activities. media sync starts checking all the media, but no sync really happens, as is expected.
 
-Scenario 5:
+Ankipi sync server behavior
+✅ WORKING: Study session sync works correctly - card activities sync properly, media verification passes without transfers.
+
+Scenario 5: ✅ TESTED SUCCESSFULLY
 Client in sync with Ankiweb, client logs out, studies a few cards, adds new card with media, and logs back in
 
 Behavior
 Hit sync, card activities sync successfully, then media sync happens: first, all media is checked, and new media is uploaded.
+
+Ankipi sync server behavior
+✅ WORKING: New media upload sync works correctly - card changes sync properly, new media files upload successfully during media sync phase.

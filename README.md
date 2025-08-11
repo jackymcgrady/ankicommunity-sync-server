@@ -74,7 +74,7 @@ Handy scripts:
 Volumes that **must** persist:
 
 ```yaml
-- ./data:/data                       # collections & media
+- ./efs:/data                        # collections & media (EFS mount)
 - ./letsencrypt:/etc/letsencrypt     # certificates
 - ./certbot-www:/var/www/certbot     # ACME challenge
 - ./logs/nginx:/var/log/nginx        # nginx logs
@@ -91,7 +91,7 @@ Volumes that **must** persist:
 | `303 stream failure` in media sync | media USN mismatch | fixed by unified media manager |
 | `JsonError invalid type` | field type mismatch | server converts `csum` & graves correctly in latest build |
 | `SSL certificate error` | self-signed cert rejected | use Let's Encrypt or import cert into trust store |
-| Media sync stuck at "checked: 250" | Client trapped requesting removed files | Reset user: `python3 scripts/reset_user_collection.py <username> --confirm --data-root ./data` |
+| Media sync stuck at "checked: 250" | Client trapped requesting removed files | Reset user: `python3 scripts/reset_user_collection.py <username> --confirm --data-root ./efs` |
 
 ### Media Sync Issues
 
@@ -102,7 +102,7 @@ Volumes that **must** persist:
 **Solution**:
 ```bash
 # Reset user's media sync state completely
-python3 scripts/reset_user_collection.py <username> --confirm --data-root ./data
+python3 scripts/reset_user_collection.py <username> --confirm --data-root ./efs
 
 # Restart container to ensure clean state
 docker-compose -f docker-compose.latest.yml restart anki-sync-server
