@@ -46,7 +46,7 @@ class ServerMediaDatabase:
             self._create_schema()
             # Check if we're creating a new database in a folder with existing media files
             # This indicates a collection upload scenario where USN alignment is needed
-            self._check_for_usn_alignment_on_creation()
+            self._create_operation_log_for_existing_files()
         else:
             self._upgrade_schema()
     
@@ -249,7 +249,34 @@ class ServerMediaDatabase:
     def last_usn(self) -> int:
         """Get the last USN from the database."""
         result = self.db.execute("SELECT last_usn FROM meta").fetchone()
-        return result[0] if result else 0
+        usn = result[0] if result else 0
+        
+        # Defensive check: if USN is 0 but files exist in database, fix the USN
+        if usn == 0:
+            file_count = self.db.execute("SELECT COUNT(*) FROM media_current").fetchone()[0]
+            if file_count > 0:
+                logger.warning(f"🔧 DEFENSIVE FIX: USN=0 but {file_count} files in database, fixing USN")
+                try:
+                    # Find the highest USN from media_current table and fix meta table
+                    max_usn = self.db.execute("SELECT MAX(added_usn) FROM media_current").fetchone()[0]
+                    if max_usn and max_usn > 0:
+                        self.db.execute("UPDATE meta SET last_usn = ?", (max_usn,))
+                        self.db.commit()
+                        usn = max_usn
+                        logger.warning(f"🔧 DEFENSIVE FIX: Updated USN to {usn}")
+                    else:
+                        logger.warning("🔧 DEFENSIVE FIX: No valid USN found in media_current, rebuilding database")
+                        # Last resort: rebuild the database
+                        db_path = self.db_path
+                        self.close()
+                        os.rename(db_path, f"{db_path}.backup")
+                        self.__init__(db_path)
+                        usn = self.db.execute("SELECT last_usn FROM meta").fetchone()[0]
+                        logger.warning(f"🔧 DEFENSIVE FIX: USN after rebuild: {usn}")
+                except Exception as e:
+                    logger.error(f"Defensive USN fix failed: {e}")
+        
+        return usn
     
     def media_changes_chunk(self, after_usn: int) -> List[Tuple[str, int, str]]:
         """Get media operations after the specified USN from the operation log."""
