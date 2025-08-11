@@ -1,0 +1,51 @@
+Scenario 0:
+
+Condition
+Client fresh new profile, empty, uns should be 0. Ankiweb have previously synced data.
+
+Official Server Behavior
+Client hit sync, prompts "download from server", card collection is downloaded instantly, and media checked and downloaded.
+
+Ankipi sync server behavior
+Client hit sync, prompts "download from server", card collection is downloaded instantly, but media sync never started.
+
+Scenario 1:
+
+Condition
+Client fresh new profile, uns should be 0, forced upload to ankiweb, but ankiweb has previously synced collections from another client, uns likely very big
+
+Official Server Behavior
+Client downloads all the media from previous collection, even though they are unused media. Then I check media, delete all unused media, sync, and need to sync up the "removed".
+
+Ankipi sync server behavior
+
+
+Scenario 2:
+
+Condition
+Client has outdated collection, should have a high uns. Ankiweb has a different collection. Media completely different.
+
+Behavior
+Client prompted a forced one-way sync. After I hit sync, cards are correctly synced, media downloaded, and a lot of "removed" synced. After sync success, check media correctly reports a lot of trash media, which I can delete.
+
+Scenario 3:
+
+Condition
+Client in sync with Ankiweb, client logs out, does nothing, and logs back in, without making any changes to the collection.
+
+Behavior
+Hit sync, card sync instantly finished, media sync starts checking all the media, but no sync really happens, as is expected.
+
+Scenario 4:
+
+Condition
+Client in sync with Ankiweb, client logs out, studies a few cards, and logs back in, without changing the collection.
+
+Behavior
+Hit sync, card syncs the study activities. media sync starts checking all the media, but no sync really happens, as is expected.
+
+Scenario 5:
+Client in sync with Ankiweb, client logs out, studies a few cards, adds new card with media, and logs back in
+
+Behavior
+Hit sync, card activities sync successfully, then media sync happens: first, all media is checked, and new media is uploaded.
