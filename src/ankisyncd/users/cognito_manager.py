@@ -1,9 +1,11 @@
 import os
 import json
+import jwt
 import boto3
 from botocore.exceptions import ClientError
 from ankisyncd import logging
 from ankisyncd.users.simple_manager import SimpleUserManager
+from db_manager import DatabaseManager
 
 logger = logging.get_logger(__name__)
 
@@ -43,6 +45,16 @@ class CognitoUserManager(SimpleUserManager):
         
         # Cache for mapping email identifiers to actual usernames
         self.username_cache = {}
+        
+        # Cache for mapping usernames to UUIDs
+        self.uuid_cache = {}
+        
+        # Initialize database manager
+        try:
+            self.db_manager = DatabaseManager()
+        except Exception as e:
+            logger.warning(f"Failed to initialize database manager: {e}")
+            self.db_manager = None
         
         logger.info(f"Initialized CognitoUserManager for user pool: {self.user_pool_id}")
 
@@ -122,24 +134,45 @@ class CognitoUserManager(SimpleUserManager):
                     'token_type': auth_result.get('TokenType', 'Bearer')
                 }
                 
-                # Get the actual username from Cognito user attributes
+                # Extract UUID and username from tokens
                 try:
                     user_info = self.cognito_client.get_user(
                         AccessToken=auth_result['AccessToken']
                     )
-                    # Extract username from user attributes
                     actual_username = user_info['Username']
                     self.username_cache[username] = actual_username
-                    logger.info(f"Authentication succeeded for user: {username}, actual username: {actual_username}")
-                    logger.info(f"Username cache updated: {username} -> {actual_username}")
+                    
+                    # Extract UUID from ID token
+                    id_token = auth_result.get('IdToken')
+                    user_uuid = None
+                    if id_token:
+                        try:
+                            # Decode without verification for now (tokens are from trusted source)
+                            decoded_token = jwt.decode(id_token, options={"verify_signature": False})
+                            user_uuid = decoded_token.get('sub')
+                            if user_uuid:
+                                self.uuid_cache[username] = user_uuid
+                                logger.info(f"Extracted UUID {user_uuid} for user {username}")
+                        except Exception as e:
+                            logger.warning(f"Failed to decode ID token for {username}: {e}")
+                    
+                    # Create/update user profile in database
+                    if self.db_manager and user_uuid:
+                        try:
+                            self.db_manager.create_user_profile(user_uuid, actual_username)
+                            logger.info(f"Created/updated profile for UUID {user_uuid}")
+                        except Exception as e:
+                            logger.error(f"Failed to create user profile: {e}")
+                    
+                    logger.info(f"Authentication succeeded for user: {username}, actual username: {actual_username}, UUID: {user_uuid}")
+                    
                 except ClientError as e:
-                    logger.warning(f"Could not retrieve username for {username}: {e}")
-                    # Fallback to email identifier if we can't get the username
+                    logger.warning(f"Could not retrieve user info for {username}: {e}")
                     self.username_cache[username] = username
                 
-                # Create user directory using the actual username
-                actual_user = self.username_cache.get(username, username)
-                self._create_user_dir(actual_user)
+                # Create user directory using UUID if available, otherwise username
+                user_dir_id = self.uuid_cache.get(username) or self.username_cache.get(username, username)
+                self._create_user_dir(user_dir_id)
                 
                 return True
             
@@ -367,7 +400,24 @@ class CognitoUserManager(SimpleUserManager):
     def userdir(self, username):
         """
         Returns the directory name for the given user.
-        For Cognito, we use the actual username from user attributes, not the email identifier.
+        For Cognito, we use the UUID if available, otherwise the actual username.
         """
-        # Return the cached actual username, or fallback to the email identifier
+        # First try cached UUID
+        if username in self.uuid_cache:
+            return self.uuid_cache[username]
+        
+        # If not cached, try to get from database using actual username
+        if self.db_manager:
+            try:
+                actual_username = self.username_cache.get(username, username)
+                profile = self.db_manager.get_user_profile_by_name(actual_username)
+                if profile and profile.get('uuid'):
+                    # Cache the UUID for future use
+                    self.uuid_cache[username] = str(profile['uuid'])
+                    logger.info(f"Found UUID from database for {username}: {profile['uuid']}")
+                    return str(profile['uuid'])
+            except Exception as e:
+                logger.warning(f"Could not get UUID from database for {username}: {e}")
+        
+        # Fallback to actual username, or email identifier
         return self.username_cache.get(username, username)

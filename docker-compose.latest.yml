@@ -29,6 +29,12 @@ services:
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
       - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-ap-southeast-1}
       
+      # PostgreSQL Configuration
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_HOST=${POSTGRES_HOST:-localhost}
+      - POSTGRES_USER=${POSTGRES_USER:-ankipi}
+      - POSTGRES_DB=${POSTGRES_DB:-ankipi}
+      
       # Server Configuration
       - ANKISYNCD_HOST=${ANKISYNCD_HOST:-0.0.0.0}
       - ANKISYNCD_PORT=${ANKISYNCD_PORT:-27702}
@@ -121,6 +127,7 @@ services:
       - certbot
     networks:
       - anki-network
+
 
 networks:
   anki-network:
