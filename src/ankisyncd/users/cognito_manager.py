@@ -156,13 +156,7 @@ class CognitoUserManager(SimpleUserManager):
                         except Exception as e:
                             logger.warning(f"Failed to decode ID token for {username}: {e}")
                     
-                    # Create/update user profile in database
-                    if self.db_manager and user_uuid:
-                        try:
-                            self.db_manager.create_user_profile(user_uuid, actual_username)
-                            logger.info(f"Created/updated profile for UUID {user_uuid}")
-                        except Exception as e:
-                            logger.error(f"Failed to create user profile: {e}")
+                    # Note: User profile creation is now handled by the webapp during signup
                     
                     logger.info(f"Authentication succeeded for user: {username}, actual username: {actual_username}, UUID: {user_uuid}")
                     
@@ -170,9 +164,8 @@ class CognitoUserManager(SimpleUserManager):
                     logger.warning(f"Could not retrieve user info for {username}: {e}")
                     self.username_cache[username] = username
                 
-                # Create user directory using UUID if available, otherwise username
-                user_dir_id = self.uuid_cache.get(username) or self.username_cache.get(username, username)
-                self._create_user_dir(user_dir_id)
+                # Note: User directory creation is now handled by the webapp during signup
+                # Directory should already exist at ./efs/collections/{uuid}/
                 
                 return True
             
