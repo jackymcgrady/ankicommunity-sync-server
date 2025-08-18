@@ -5,7 +5,7 @@ import boto3
 from botocore.exceptions import ClientError
 from ankisyncd import logging
 from ankisyncd.users.simple_manager import SimpleUserManager
-from db_manager import DatabaseManager
+from .db_manager import DatabaseManager
 
 logger = logging.get_logger(__name__)
 
