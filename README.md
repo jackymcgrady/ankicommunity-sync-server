@@ -43,6 +43,9 @@ Required environment variables in `.env`:
 | POSTGRES_DB | PostgreSQL database name (default: ankipi) |
 | DOMAIN_NAME | Your domain name |
 | EMAIL | Email for Let's Encrypt certificates |
+| DATA_VOLUME_SOURCE | Host path for user data (default: ./efs) |
+| CONTAINER_USER_ID | Container user ID (default: 1001) |
+| CONTAINER_GROUP_ID | Container group ID (default: 65533) |
 
 ## User Management
 
@@ -85,6 +88,7 @@ echo "yes" | python3 scripts/reset_user_collection.py <cognito-uuid> --confirm -
 - User data is stored in `./efs/collections/` directory
 - Collections are organized by Cognito UUID, not username
 - PostgreSQL database contains user profiles and metadata
+- When deploying with a webapp, ensure both containers use matching user IDs (1001:65533) for shared data access
 
 ## Troubleshooting
 
@@ -121,6 +125,25 @@ PGPASSWORD=<password> psql -h localhost -U ankipi -d ankipi -c "SELECT profile_i
 **Check collection folders:**
 ```bash
 ls -la ./efs/collections/  # Should show UUID-named folders
+```
+
+**"Readonly database" or permission errors:**
+```bash
+# Fix permissions for shared data access with webapp
+sudo chown -R 1001:65533 ./efs/
+sudo chmod -R 755 ./efs/
+
+# Remove corrupted session files
+rm -f ./efs/session.db*
+
+# Restart containers
+docker-compose -f docker-compose.latest.yml restart
+```
+
+**Sync stuck on "checking" status:**
+This is normal during metadata exchange. The sync is likely working correctly. Check logs for ✅ SUCCESS messages:
+```bash
+docker-compose -f docker-compose.latest.yml logs anki-sync-server | grep -E "(SUCCESS|ERROR|collection)"
 ```
 
 ## Database Schema
