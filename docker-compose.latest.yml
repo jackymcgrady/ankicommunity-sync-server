@@ -5,7 +5,7 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: anki-sync-server-nginx
-    user: "${CONTAINER_USER_ID:-1000}:${CONTAINER_GROUP_ID:-1000}"
+    user: "${CONTAINER_USER_ID:-1001}:${CONTAINER_GROUP_ID:-65533}"
     deploy:
       resources:
         limits:
@@ -48,7 +48,7 @@ services:
       - PYTHONPATH=/app/src
     volumes:
       - ./src:/app/src
-      - ${DATA_VOLUME_SOURCE:-data}:/data:rw
+      - ${DATA_VOLUME_SOURCE:-./efs}:/data:rw
     restart: unless-stopped
     command: >
       sh -c "
