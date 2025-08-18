@@ -39,8 +39,8 @@ Required environment variables in `.env`:
 | ANKISYNCD_COGNITO_REGION | AWS region (default: ap-southeast-1) |
 | POSTGRES_PASSWORD | PostgreSQL database password |
 | POSTGRES_HOST | PostgreSQL host (default: localhost) |
-| POSTGRES_USER | PostgreSQL username (default: ankipi) |
-| POSTGRES_DB | PostgreSQL database name (default: ankipi) |
+| POSTGRES_USER | PostgreSQL username (default: anki) |
+| POSTGRES_DB | PostgreSQL database name (default: anki) |
 | DOMAIN_NAME | Your domain name |
 | EMAIL | Email for Let's Encrypt certificates |
 | DATA_VOLUME_SOURCE | Host path for user data (default: ./efs) |
@@ -95,7 +95,7 @@ echo "yes" | python3 scripts/reset_user_collection.py <cognito-uuid> --confirm -
 **User can't sync / "no collection found"?**
 ```bash
 # Check user's UUID in database
-PGPASSWORD=<password> psql -h localhost -U ankipi -d ankipi -c "SELECT uuid, name FROM profiles WHERE name = 'username';"
+PGPASSWORD=<password> psql -h localhost -U <username> -d <database> -c "SELECT uuid, name FROM profiles WHERE name = 'username';"
 
 # Clear sessions and restart
 rm -f ./efs/session.db*
@@ -116,10 +116,10 @@ echo "yes" | python3 scripts/reset_user_collection.py <cognito-uuid> --confirm -
 **Database issues:**
 ```bash
 # Check PostgreSQL connection
-PGPASSWORD=<password> psql -h localhost -U ankipi -d ankipi -c "\dt"
+PGPASSWORD=<password> psql -h localhost -U <username> -d <database> -c "\dt"
 
 # View user profiles
-PGPASSWORD=<password> psql -h localhost -U ankipi -d ankipi -c "SELECT profile_id, name, uuid, created_at FROM profiles;"
+PGPASSWORD=<password> psql -h localhost -U <username> -d <database> -c "SELECT profile_id, name, uuid, created_at FROM profiles;"
 ```
 
 **Check collection folders:**

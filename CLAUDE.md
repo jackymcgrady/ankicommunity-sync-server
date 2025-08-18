@@ -27,3 +27,4 @@
   This sets huyuping's collection and media data to completely empty, ready for a fresh first sync.
 - user collections are stored in /efs/ from the host's perspective
 - this is opensource project, no credentials in codebase credentials go to env variable
+- you should never add anything ankipi-specific in readme, as this project is an opensource based on an opensource community project, and serves as ankipi's infrastructure, but should not be seen affiliated to ankipi.
