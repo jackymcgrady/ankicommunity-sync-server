@@ -28,3 +28,5 @@
 - user collections are stored in /efs/ from the host's perspective
 - this is opensource project, no credentials in codebase credentials go to env variable
 - you should never add anything ankipi-specific in readme, as this project is an opensource based on an opensource community project, and serves as ankipi's infrastructure, but should not be seen affiliated to ankipi.
+- when you look at specific uuid-based user collection folder, always check the username accordingly in ankipi.db.profiles, then communicate with both uuid and username so I can better understand.
+- you should always backup data from session.db which holds usn before deleting it out of absolute necessity.

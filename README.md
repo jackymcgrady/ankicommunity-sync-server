@@ -9,6 +9,7 @@ Self-hosted Anki sync server with AWS Cognito authentication, PostgreSQL user ma
 - 📁 **UUID-based Collections** - Collections stored using stable Cognito UUIDs
 - 🔒 **Automatic HTTPS** - Let's Encrypt certificates with nginx reverse proxy
 - 📦 **Docker Containerized** - Easy deployment and management
+- 🛡️ **NFS Lock Prevention** - Automatic cleanup of stale collection locks
 
 ## Quick Start
 
@@ -99,6 +100,15 @@ PGPASSWORD=<password> psql -h localhost -U <username> -d <database> -c "SELECT u
 
 # Clear sessions and restart
 rm -f ./efs/session.db*
+docker-compose -f docker-compose.latest.yml restart anki-sync-server
+```
+
+**Collection locked ("Anki already open")?**
+```bash
+# Remove NFS/WAL lock files
+sudo ./scripts/cleanup-nfs-locks.sh
+# Or manually:
+sudo rm -f ./efs/collections/*/.*nfs* ./efs/collections/*/*.anki2-wal ./efs/collections/*/*-shm
 docker-compose -f docker-compose.latest.yml restart anki-sync-server
 ```
 

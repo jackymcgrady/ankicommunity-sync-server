@@ -46,13 +46,21 @@ services:
       
       # Python path for development
       - PYTHONPATH=/app/src
+      # Collections root for cleanup scripts
+      - COLLECTIONS_ROOT=/data/collections
     volumes:
       - ./src:/app/src
+      - ./scripts:/app/scripts:ro
       - ${DATA_VOLUME_SOURCE:-./efs}:/data:rw
     restart: unless-stopped
+    stop_grace_period: 30s
+    stop_signal: SIGTERM
     command: >
       sh -c "
         mkdir -p /data/collections &&
+        cp /app/scripts/cleanup-nfs-locks.sh /tmp/cleanup-nfs-locks.sh &&
+        chmod +x /tmp/cleanup-nfs-locks.sh &&
+        COLLECTIONS_ROOT=/data/collections /tmp/cleanup-nfs-locks.sh &&
         exec python -m ankisyncd
       "
     healthcheck:
@@ -105,6 +113,8 @@ services:
     depends_on:
       - anki-sync-server
     restart: unless-stopped
+    stop_grace_period: 15s
+    stop_signal: SIGTERM
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:80/"]
       interval: 30s
