@@ -43,6 +43,9 @@ ipython_config.py
 # KDE directory preferences
 .directory
 
+# unified that exposes ankipi secret
+ankipi_unified_architecture_readme.md
+
 # Linux trash folder which might appear on any partition or disk
 .Trash-*
 
