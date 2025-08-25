@@ -105,6 +105,7 @@ class SyncCollectionHandler(Syncer):
         "applyChunk",
         "sanityCheck2",
         "finish",
+        "abort",
     ]
 
     def __init__(self, col, session):
@@ -379,6 +380,18 @@ class SyncCollectionHandler(Syncer):
 
         return now
 
+    def abort(self):
+        """Abort the current sync session.
+        
+        Called by clients when they need to cancel/abort an ongoing sync.
+        Returns minimal response to acknowledge the abort.
+        """
+        # Log the abort for debugging
+        logger.info(f"Sync aborted by client for session: {getattr(self.session, 'name', 'unknown')}")
+        
+        # Return minimal success response - clients expect some JSON response
+        return {"status": "ok"}
+
     # This function had to be put here in its entirety because Syncer.removed()
     # doesn't use self.usnLim() (which we override in this class) in queries.
     # "usn=-1" has been replaced with "usn >= ?", self.minUsn by hand.
@@ -392,16 +405,17 @@ class SyncCollectionHandler(Syncer):
         )
 
         for oid, type in curs:
-            # Convert oid to string as expected by Anki's sync protocol
-            oid_str = str(oid)
+            # Keep oid as integer for modern clients (iOS expects i64, not string)
             if type == REM_CARD:
-                cards.append(oid_str)
+                cards.append(oid)
             elif type == REM_NOTE:
-                notes.append(oid_str)
+                notes.append(oid)
             else:
-                decks.append(oid_str)
+                decks.append(oid)
 
-        return dict(cards=cards, notes=notes, decks=decks)
+        result = dict(cards=cards, notes=notes, decks=decks)
+        logger.info(f"🔍 START RESPONSE: {result}")
+        return result
 
     def getModels(self):
         return [m for m in self.col.models.all() if m["usn"] >= self.minUsn]
