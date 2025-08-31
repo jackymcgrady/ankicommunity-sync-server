@@ -38,7 +38,7 @@ class CollectionManager:
                 setup_new_collection(collection_path)
             else:
                 # Create a new empty collection
-                Collection(collection_path)
+                Collection(collection_path, server=True)
         
         # Clean up any NFS locks before opening
         self.cleanup_nfs_locks(collection_dir)
@@ -46,7 +46,7 @@ class CollectionManager:
         # Return existing collection or create new one
         if collection_path not in self._collections:
             try:
-                self._collections[collection_path] = Collection(collection_path)
+                self._collections[collection_path] = Collection(collection_path, server=True)
                 logger.info(f"Opened collection: {collection_path}")
             except Exception as e:
                 logger.error(f"Error opening collection {collection_path}: {e}")
