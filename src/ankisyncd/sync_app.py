@@ -1339,9 +1339,27 @@ class SyncApp:
         
         try:
             result = user_sync_queue.execute_sync_operation(username, sync_operation)
+            
+            # Force close collection after each operation to prevent locks
+            try:
+                collection_path = session.get_collection_path()
+                session.collection_manager.close_collection(collection_path)
+                logging.info(f"Force closed collection after sync operation: {collection_path}")
+            except Exception as cleanup_error:
+                logging.warning(f"Failed to force close collection: {cleanup_error}")
+            
             return result
         except Exception as e:
             logging.error(f"Sync operation failed for user {username}: {e}")
+            
+            # Also try to close collection on error to prevent locks
+            try:
+                collection_path = session.get_collection_path()
+                session.collection_manager.close_collection(collection_path)
+                logging.info(f"Force closed collection after sync error: {collection_path}")
+            except Exception as cleanup_error:
+                logging.warning(f"Failed to force close collection after error: {cleanup_error}")
+            
             raise
 
 
