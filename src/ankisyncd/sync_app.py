@@ -1343,8 +1343,10 @@ class SyncApp:
             # Force close collection after each operation to prevent locks
             try:
                 collection_path = session.get_collection_path()
-                session.collection_manager.close_collection(collection_path)
-                logging.info(f"Force closed collection after sync operation: {collection_path}")
+                if collection_path in session.collection_manager.collections:
+                    session.collection_manager.collections[collection_path].close()
+                    del session.collection_manager.collections[collection_path]
+                    logging.info(f"Force closed collection after sync operation: {collection_path}")
             except Exception as cleanup_error:
                 logging.warning(f"Failed to force close collection: {cleanup_error}")
             
@@ -1355,8 +1357,10 @@ class SyncApp:
             # Also try to close collection on error to prevent locks
             try:
                 collection_path = session.get_collection_path()
-                session.collection_manager.close_collection(collection_path)
-                logging.info(f"Force closed collection after sync error: {collection_path}")
+                if collection_path in session.collection_manager.collections:
+                    session.collection_manager.collections[collection_path].close()
+                    del session.collection_manager.collections[collection_path]
+                    logging.info(f"Force closed collection after sync error: {collection_path}")
             except Exception as cleanup_error:
                 logging.warning(f"Failed to force close collection after error: {cleanup_error}")
             

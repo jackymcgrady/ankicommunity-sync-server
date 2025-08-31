@@ -1,11 +1,11 @@
 # Anki Sync Server
 
-Self-hosted Anki sync server with AWS Cognito authentication, PostgreSQL user management, and automatic HTTPS certificates.
+Self-hosted Anki sync server with AWS Cognito authentication, SQLite user management, and automatic HTTPS certificates.
 
 ## Features
 
 - 🔐 **AWS Cognito Authentication** - Secure user management with Cognito User Pool
-- 🗄️ **PostgreSQL Integration** - User profiles and metadata stored in PostgreSQL
+- 💾 **SQLite User Management** - User profiles and metadata stored in SQLite database
 - 📁 **UUID-based Collections** - Collections stored using stable Cognito UUIDs
 - 🔒 **Automatic HTTPS** - Let's Encrypt certificates with nginx reverse proxy
 - 📦 **Docker Containerized** - Easy deployment and management
@@ -15,7 +15,7 @@ Self-hosted Anki sync server with AWS Cognito authentication, PostgreSQL user ma
 
 ```bash
 # Configure environment
-cp .env.example .env && nano .env     # fill in AWS + Cognito + domain + PostgreSQL
+cp .env.example .env && nano .env     # fill in AWS + Cognito + domain configuration
 
 # Launch server
 docker-compose -f docker-compose.latest.yml up -d
@@ -30,23 +30,24 @@ Connect Anki clients to `https://<your-domain>` using your Cognito credentials.
 
 Required environment variables in `.env`:
 
-| Variable | Purpose |
-|----------|---------|
-| AWS_ACCESS_KEY_ID | AWS credentials for Cognito |
-| AWS_SECRET_ACCESS_KEY | AWS credentials for Cognito |
-| ANKISYNCD_COGNITO_USER_POOL_ID | Cognito User Pool ID |
-| ANKISYNCD_COGNITO_CLIENT_ID | Cognito App Client ID |
-| ANKISYNCD_COGNITO_CLIENT_SECRET | Cognito App Client Secret |
-| ANKISYNCD_COGNITO_REGION | AWS region (default: ap-southeast-1) |
-| POSTGRES_PASSWORD | PostgreSQL database password |
-| POSTGRES_HOST | PostgreSQL host (default: localhost) |
-| POSTGRES_USER | PostgreSQL username (default: anki) |
-| POSTGRES_DB | PostgreSQL database name (default: anki) |
-| DOMAIN_NAME | Your domain name |
-| EMAIL | Email for Let's Encrypt certificates |
-| DATA_VOLUME_SOURCE | Host path for user data (default: ./efs) |
-| CONTAINER_USER_ID | Container user ID (default: 1001) |
-| CONTAINER_GROUP_ID | Container group ID (default: 65533) |
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| AWS_ACCESS_KEY_ID | AWS credentials for Cognito | - |
+| AWS_SECRET_ACCESS_KEY | AWS credentials for Cognito | - |
+| AWS_DEFAULT_REGION | AWS region | ap-southeast-1 |
+| ANKISYNCD_COGNITO_USER_POOL_ID | Cognito User Pool ID | - |
+| ANKISYNCD_COGNITO_CLIENT_ID | Cognito App Client ID | - |
+| ANKISYNCD_COGNITO_CLIENT_SECRET | Cognito App Client Secret | - |
+| ANKISYNCD_COGNITO_REGION | AWS region for Cognito | ap-southeast-1 |
+| DOMAIN_NAME | Your domain name | - |
+| EMAIL | Email for Let's Encrypt certificates | - |
+| SSL_MODE | SSL certificate mode | letsencrypt |
+| DEV_MODE | Enable development mode | false |
+| DATA_VOLUME_SOURCE | Host path for user data | ./efs |
+| CONTAINER_USER_ID | Container user ID | 1001 |
+| CONTAINER_GROUP_ID | Container group ID | 65533 |
+| MEMORY_LIMIT | Container memory limit | 512M |
+| CPU_LIMIT | Container CPU limit | 1.0 |
 
 ## User Management
 
@@ -54,22 +55,15 @@ Required environment variables in `.env`:
 
 1. Users authenticate with Cognito credentials (email/username + password)
 2. Server extracts permanent UUID from Cognito `sub` claim
-3. User profile created/updated in PostgreSQL with UUID link
+3. User profile created/updated in SQLite database with UUID link
 4. Collections stored in `./efs/collections/{cognito-uuid}/`
 
-### Migration from Username-based System
+### User Management
 
-If migrating from an older version using usernames for folder names:
-
-```bash
-# Run migration script (dry run first)
-python3 scripts/migrate_user_uuids.py --data-root ./efs
-
-# Execute migration after reviewing
-python3 scripts/migrate_user_uuids.py --execute --data-root ./efs
-```
-
-See [README_MIGRATION.md](README_MIGRATION.md) for detailed migration instructions.
+User profiles are stored in a SQLite database (`session.db`) with the following structure:
+- `profiles` table with UUID, username, and sync metadata
+- Automatic profile creation on first sync
+- UUID-based collection organization for stability
 
 ## Operations
 
@@ -88,19 +82,20 @@ echo "yes" | python3 scripts/reset_user_collection.py <cognito-uuid> --confirm -
 **Important**: 
 - User data is stored in `./efs/collections/` directory
 - Collections are organized by Cognito UUID, not username
-- PostgreSQL database contains user profiles and metadata
+- SQLite database (`session.db`) contains user profiles and sync metadata
 - When deploying with a webapp, ensure both containers use matching user IDs (1001:65533) for shared data access
+- Collections use server mode (`server=True`) for proper USN tracking
 
 ## Troubleshooting
 
 **User can't sync / "no collection found"?**
 ```bash
-# Check user's UUID in database
-PGPASSWORD=<password> psql -h localhost -U <username> -d <database> -c "SELECT uuid, name FROM profiles WHERE name = 'username';"
+# Check user's UUID in SQLite database
+sqlite3 ./efs/session.db "SELECT uuid, name FROM profiles WHERE name = 'username';"
 
 # Clear sessions and restart
 rm -f ./efs/session.db*
-docker-compose -f docker-compose.latest.yml restart anki-sync-server
+docker-compose -f docker-compose.latest.yml restart anki-sync-server-nginx
 ```
 
 **Collection locked ("Anki already open")?**
@@ -125,11 +120,11 @@ echo "yes" | python3 scripts/reset_user_collection.py <cognito-uuid> --confirm -
 
 **Database issues:**
 ```bash
-# Check PostgreSQL connection
-PGPASSWORD=<password> psql -h localhost -U <username> -d <database> -c "\dt"
+# Check SQLite database structure
+sqlite3 ./efs/session.db ".tables"
 
 # View user profiles
-PGPASSWORD=<password> psql -h localhost -U <username> -d <database> -c "SELECT profile_id, name, uuid, created_at FROM profiles;"
+sqlite3 ./efs/session.db "SELECT profile_id, name, uuid, created_at FROM profiles;"
 ```
 
 **Check collection folders:**
@@ -153,16 +148,21 @@ docker-compose -f docker-compose.latest.yml restart
 **Sync stuck on "checking" status:**
 This is normal during metadata exchange. The sync is likely working correctly. Check logs for ✅ SUCCESS messages:
 ```bash
-docker-compose -f docker-compose.latest.yml logs anki-sync-server | grep -E "(SUCCESS|ERROR|collection)"
+docker-compose -f docker-compose.latest.yml logs anki-sync-server-nginx | grep -E "(SUCCESS|ERROR|collection)"
 ```
+
+**Recent USN Sync Fix:**
+The server now uses consistent server-mode (`server=True`) collection access to prevent USN mismatches that caused forced one-way syncs. This ensures all collection operations use the same USN tracking behavior for reliable synchronization.
 
 ## Database Schema
 
-The `profiles` table contains:
-- `profile_id` - Auto-incrementing primary key
-- `uuid` - Cognito user's permanent UUID (`sub` claim)
-- `name` - Cognito username  
-- `created_at` - Profile creation timestamp
-- `is_active` - User active status
+The SQLite database (`session.db`) contains user profiles and sync metadata:
 
-Foreign key relationships exist with `deck_stats`, `decks`, `note_types`, and `pass` tables.
+- `profiles` table:
+  - `profile_id` - Auto-incrementing primary key
+  - `uuid` - Cognito user's permanent UUID (`sub` claim)
+  - `name` - Cognito username  
+  - `created_at` - Profile creation timestamp
+  - `is_active` - User active status
+
+- Additional tables for sync state management and session tracking
