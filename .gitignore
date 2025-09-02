@@ -386,3 +386,6 @@ db_migration/migration_backups/
 
 # Claude Code local configuration
 .claude.md
+
+# Deployment configuration with secrets
+ECS_DEPLOYMENT_INGREDIENTS.md
