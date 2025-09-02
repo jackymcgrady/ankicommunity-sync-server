@@ -1,0 +1,42 @@
+name: Notify meta on push
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    types: [closed]
+    branches: [ main, master ]
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    # Only run on push to main/master, or when PR is merged
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || (github.event.pull_request.merged == true)
+    
+    steps:
+      - name: Repository dispatch to meta
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "🔔 Notifying meta repo of changes in ${{ github.repository }}"
+          curl -s -X POST \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/jackymcgrady/ankipi-meta/dispatches \
+            -d '{
+              "event_type": "ankipi_repo_updated",
+              "client_payload": {
+                "repo": "${{ github.repository }}",
+                "sha": "${{ github.sha }}",
+                "ref": "${{ github.ref }}",
+                "actor": "${{ github.actor }}",
+                "event": "${{ github.event_name }}"
+              }
+            }'
+          
+          if [ $? -eq 0 ]; then
+            echo "✅ Successfully notified meta repo"
+          else
+            echo "❌ Failed to notify meta repo"
+            exit 1
+          fi
