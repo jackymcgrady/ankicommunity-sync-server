@@ -383,3 +383,6 @@ src/ankisyncd.cognito.conf
 # Ignore generated certificates and dumps
 certbot-www/
 db_migration/migration_backups/
+
+# Claude Code local configuration
+.claude.md
