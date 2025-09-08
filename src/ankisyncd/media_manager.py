@@ -523,8 +523,47 @@ class ServerMediaManager:
         return usn
     
     def media_changes_chunk(self, after_usn: int) -> List[Dict[str, Any]]:
-        """Get media changes after the specified USN in the format expected by clients."""
+        """Get media changes after the specified USN in the format expected by clients.
+
+        Additionally, proactively fix server DB entries that advertise files as present
+        when they are missing on disk. This avoids a later 409 during downloadFiles and
+        provides a smoother UX.
+        """
+        # First pass: read current operation log batch
         changes = self.db.media_changes_chunk(after_usn)
+
+        # Detect invalid 'add' entries where the file is missing on disk
+        missing_adds: List[str] = []
+        for fname, _usn, csum in changes:
+            if csum and isinstance(csum, str) and len(csum) > 0:
+                # Treat as 'add' operation
+                if not (self.media_folder / fname).exists():
+                    missing_adds.append(fname)
+
+        # If we found missing files, correct the DB now and re-fetch the batch so
+        # clients can see the resulting 'remove' operations instead of hitting 409 later
+        if missing_adds:
+            for fname in missing_adds:
+                try:
+                    self.db.forget_missing_file(fname)
+                except Exception as e:
+                    logger.error(f"Failed to forget missing file during media_changes for '{fname}': {e}")
+
+            # Re-fetch after applying corrections so the new remove ops are included
+            changes = self.db.media_changes_chunk(after_usn)
+
+            # As a safety net, filter out any remaining invalid adds in case the remove
+            # fell outside the current 250 limit. This prevents the client from trying to
+            # download a missing file in this cycle.
+            filtered: List[Tuple[str, int, str]] = []
+            for fname, usn, csum in changes:
+                if csum and isinstance(csum, str) and len(csum) > 0:
+                    if not (self.media_folder / fname).exists():
+                        # Drop invalid add from this response
+                        continue
+                filtered.append((fname, usn, csum))
+            changes = filtered
+
         return [
             {"fname": fname, "usn": usn, "sha1": (csum.lower() if isinstance(csum, str) else csum)}
             for fname, usn, csum in changes
