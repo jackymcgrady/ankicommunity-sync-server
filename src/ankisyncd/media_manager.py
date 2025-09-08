@@ -19,6 +19,11 @@ from anki.utils import checksum
 
 logger = logging.getLogger("ankisyncd.media_manager")
 
+# Raised when the client requests a media file that the server's DB says exists,
+# but the corresponding file is missing on disk. Used to trigger a 409 response.
+class MediaConflict(Exception):
+    pass
+
 # Constants from Anki reference code
 MAX_MEDIA_FILENAME_LENGTH = 120
 MAX_MEDIA_FILENAME_LENGTH_SERVER = 255
@@ -312,6 +317,70 @@ class ServerMediaDatabase:
         logger.info(f"Recalculated media counts: files={actual_count}, bytes={actual_bytes}")
         return actual_count
     
+    def forget_missing_file(self, filename: str) -> None:
+        """Record a removal for a file missing on disk to bring operation log/current state
+        back into consistency. This prevents clients from repeatedly attempting to
+        download a non-existent file.
+
+        For our append-only operation log schema, we insert a 'remove' operation with a
+        new USN, delete from current state, and update meta counts + last_usn.
+        """
+        try:
+            # Lookup current entry for file to adjust counts
+            row = self.db.execute(
+                "SELECT size FROM media_current WHERE fname = ?",
+                (filename,),
+            ).fetchone()
+
+            if not row:
+                # Nothing to do if not currently present
+                return
+
+            file_size = row[0] if row and row[0] is not None else 0
+
+            current_usn = self.last_usn()
+            new_usn = current_usn + 1
+            current_time = int(time.time())
+
+            # Append a remove op so future media_changes advertise deletion
+            self.db.execute(
+                """
+                INSERT INTO media_operations (usn, operation, fname, csum, size, timestamp)
+                VALUES (?, 'remove', ?, NULL, NULL, ?)
+                """,
+                (new_usn, filename, current_time),
+            )
+
+            # Remove from current state
+            self.db.execute("DELETE FROM media_current WHERE fname = ?", (filename,))
+
+            # Update meta counters and last_usn
+            if file_size and isinstance(file_size, int):
+                self.db.execute(
+                    """
+                    UPDATE meta SET 
+                        total_bytes = total_bytes - ?,
+                        total_nonempty_files = total_nonempty_files - 1,
+                        last_usn = ?
+                    """,
+                    (file_size, new_usn),
+                )
+            else:
+                self.db.execute("UPDATE meta SET last_usn = ?", (new_usn,))
+
+            self.db.commit()
+            logger.warning(
+                f"🔧 FORGET MISSING: Recorded removal op for missing file '{filename}', advanced USN to {new_usn}"
+            )
+        except Exception as e:
+            # Rollback on error to keep DB consistent
+            try:
+                self.db.rollback()
+            except Exception:
+                pass
+            logger.error(f"Failed to forget missing file '{filename}': {e}")
+            raise
+    
     def register_uploaded_change(self, filename: str, data: Optional[bytes], 
                                sha1_hex: Optional[str]) -> Tuple[str, int]:
         """Register an uploaded file change in the operation log (correct Anki protocol)."""
@@ -581,48 +650,16 @@ class ServerMediaManager:
                     if len(file_map) >= MAX_MEDIA_FILES_IN_ZIP:
                         break
                 else:
-                    # Check if this file has been explicitly removed from the server
-                    # If so, don't try NFC fallback as it wastes time and causes loops
+                    # The server's DB claims the file exists, but it's missing on disk.
+                    # Update DB to reflect removal and abort with a conflict so the client
+                    # can resync cleanly.
                     try:
-                        removed_check = self.db.db.execute("""
-                            SELECT operation FROM media_operations 
-                            WHERE fname = ? 
-                            ORDER BY usn DESC 
-                            LIMIT 1
-                        """, (filename,)).fetchone()
-                        
-                        if removed_check and removed_check[0] == 'remove':
-                            logger.debug(f"File {filename} was explicitly removed, skipping NFC fallback")
-                        else:
-                            # Fallback: search for an NFC-normalized filename match on disk
-                            alt_path = None
-                            target = None
-                            try:
-                                target = unicodedata.normalize("NFC", filename)
-                            except Exception:
-                                target = filename
-                            for p in self.media_folder.iterdir():
-                                try:
-                                    if unicodedata.normalize("NFC", p.name) == target:
-                                        alt_path = p
-                                        break
-                                except Exception:
-                                    continue
-                            if alt_path and alt_path.is_file():
-                                zip_name = str(i)
-                                zf.write(alt_path, zip_name)
-                                file_map[zip_name] = filename
-                                found_files += 1
-                                logger.info(f"Added file via NFC fallback {found_files}: {alt_path.name} as {filename} -> {zip_name}")
-                                if zip_buffer.tell() > MEDIA_SYNC_TARGET_ZIP_BYTES:
-                                    break
-                                if len(file_map) >= MAX_MEDIA_FILES_IN_ZIP:
-                                    break
-                                continue
+                        self.db.forget_missing_file(filename)
                     except Exception as e:
-                        logger.debug(f"Error checking removal status for {filename}: {e}")
-                    
-                    logger.warning(f"Requested file not found: {filename} (path: {file_path})")
+                        # If DB update fails, still raise a conflict to stop the loop
+                        logger.error(f"Failed to update DB for missing file '{filename}': {e}")
+                    logger.warning(f"Requested file not found: {filename} (path: {file_path}); raising conflict")
+                    raise MediaConflict(f"requested a file that doesn't exist: {filename}")
             
             # Add metadata file with proper mapping
             # The client uses this to map zip entries back to filenames
@@ -946,6 +983,9 @@ class MediaSyncHandler:
             result = self.media_manager.zip_files_for_download(files)
             logger.info(f"Download response size: {len(result)} bytes")
             return result
+        except MediaConflict:
+            # Propagate so the caller can translate into an HTTP 409
+            raise
         except Exception as e:
             logger.error(f"Error downloading files: {e}")
             # Return empty zip on error

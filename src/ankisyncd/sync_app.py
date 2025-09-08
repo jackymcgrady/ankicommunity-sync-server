@@ -95,6 +95,11 @@ class HTTPInternalServerError(HTTPException):
     pass
 
 
+class HTTPConflict(HTTPException):
+    """HTTP 409 Conflict"""
+    pass
+
+
 class SyncCollectionHandler(Syncer):
     operations = [
         "meta",
@@ -723,6 +728,9 @@ class chunked(object):
         except HTTPNotFound as e:
             resp = Response(str(e), status=404)
             return resp(environ, start_response)
+        except HTTPConflict as e:
+            resp = Response(str(e), status=409)
+            return resp(environ, start_response)
         except HTTPInternalServerError as e:
             resp = Response(str(e), status=500)
             return resp(environ, start_response)
@@ -1024,6 +1032,11 @@ class SyncApp:
                 
                 result = handler.download_files(files)
             except Exception as e:
+                # Translate media missing conflicts to HTTP 409 to match official behavior
+                from ankisyncd.media_manager import MediaConflict
+                if isinstance(e, MediaConflict):
+                    logger.warning(f"downloadFiles conflict: {e}")
+                    raise HTTPConflict(str(e))
                 logger.error(f"Error processing downloadFiles request: {e}")
                 result = handler.download_files([])
             
