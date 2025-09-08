@@ -154,6 +154,13 @@ docker-compose -f docker-compose.latest.yml logs anki-sync-server-nginx | grep -
 **Recent USN Sync Fix:**
 The server now uses consistent server-mode (`server=True`) collection access to prevent USN mismatches that caused forced one-way syncs. This ensures all collection operations use the same USN tracking behavior for reliable synchronization.
 
+**Missing Media Files Fix:**
+The server now automatically handles missing media files through proactive database cleanup and conflict resolution. When media files are missing from disk but still referenced in the database, the server:
+- Detects inconsistencies during media operations 
+- Updates the operation log to record file removals
+- Prevents clients from getting stuck in endless retry loops requesting non-existent files
+- Ensures sync can continue normally even when media files have been lost or deleted
+
 ## Database Schema
 
 The SQLite database (`session.db`) contains user profiles and sync metadata:
