@@ -133,15 +133,35 @@ ls -la ./efs/collections/  # Should show UUID-named folders
 ```
 
 **"Readonly database" or permission errors:**
-```bash
-# Fix permissions for shared data access with webapp
-sudo chown -R 1001:65533 ./efs/
-sudo chmod -R 755 ./efs/
 
+When encountering `"attempt to write a readonly database"` errors, use these **fast, targeted commands** instead of slow recursive operations:
+
+```bash
+# FAST: Fix only specific collection (replace UUID with actual user UUID)
+sudo chown 1001:65533 ./efs/collections/<user-uuid>/
+
+# Check current permissions
+ls -la ./efs/collections/<user-uuid>/collection.anki2
+
+# Restart container
+docker-compose -f docker-compose.latest.yml restart anki-sync-server
+
+# Monitor logs for sync attempts
+docker-compose -f docker-compose.latest.yml logs -f anki-sync-server
+```
+
+**Why this works:**
+- The container runs as user `1001:65533`
+- Collection files need to be owned by this user for write access
+- Directories must have `755` permissions, files `644` permissions
+- Avoids slow recursive operations on EFS with thousands of files
+
+**For complete reset (if needed):**
+```bash
 # Remove corrupted session files
 rm -f ./efs/session.db*
 
-# Restart containers
+# Restart all containers
 docker-compose -f docker-compose.latest.yml restart
 ```
 
