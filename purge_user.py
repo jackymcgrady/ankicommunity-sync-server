@@ -192,9 +192,12 @@ class DatabaseConnection:
             self.conn.close()
 
     def execute(self, query: str, params: tuple = None):
-        """Execute a query and return results"""
+        """Execute a query and return results (if any)"""
         self.cursor.execute(query, params)
-        return self.cursor.fetchall()
+        # Only fetch if query returns results (SELECT, RETURNING, etc)
+        if self.cursor.description:
+            return self.cursor.fetchall()
+        return None
 
     def execute_one(self, query: str, params: tuple = None):
         """Execute a query and return one result"""

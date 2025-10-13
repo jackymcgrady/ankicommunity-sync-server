@@ -57,6 +57,7 @@ services:
     stop_signal: SIGTERM
     command: >
       sh -c "
+        umask 0002 &&
         mkdir -p /data/collections &&
         cp /app/scripts/cleanup-nfs-locks.sh /tmp/cleanup-nfs-locks.sh &&
         chmod +x /tmp/cleanup-nfs-locks.sh &&
