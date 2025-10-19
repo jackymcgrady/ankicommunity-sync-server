@@ -92,7 +92,7 @@ The script uses environment variables with sensible defaults:
 - `PGPORT` (default: 5432)
 - `PGDATABASE` (default: ankipi)
 - `PGUSER` (default: ankipi)
-- `PGPASSWORD` (default: Huyuping254202)
+- `PGPASSWORD` (required - no default for security)
 
 ### AWS Cognito
 - `COGNITO_USER_POOL_ID` (default: ap-southeast-1_aDQ1S4x28)

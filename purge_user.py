@@ -52,14 +52,20 @@ except ImportError:
 # CONFIGURATION
 # =============================================================================
 
-# Database configuration (from environment or defaults)
+# Database configuration (from environment - NO DEFAULTS FOR SECURITY)
 DB_CONFIG = {
     'host': os.getenv('PGHOST', 'localhost'),
     'port': os.getenv('PGPORT', '5432'),
     'database': os.getenv('PGDATABASE', 'ankipi'),
     'user': os.getenv('PGUSER', 'ankipi'),
-    'password': os.getenv('PGPASSWORD', 'Huyuping254202')
+    'password': os.getenv('PGPASSWORD')  # REQUIRED - must be set in environment
 }
+
+# Validate required environment variables
+if not DB_CONFIG['password']:
+    print("ERROR: PGPASSWORD environment variable must be set")
+    print("Example: export PGPASSWORD='your-password'")
+    sys.exit(1)
 
 # AWS Cognito configuration
 COGNITO_CONFIG = {
