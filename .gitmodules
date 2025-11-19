@@ -1,0 +1,3 @@
+[submodule "ankipi-meta"]
+	path = ankipi-meta
+	url = https://github.com/jackymcgrady/ankipi-meta.git
