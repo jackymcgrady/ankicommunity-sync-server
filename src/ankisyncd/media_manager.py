@@ -96,7 +96,22 @@ class ServerMediaDatabase:
         """)
         self.db.commit()
         logger.info("Created new append-only operation log media database schema")
-    
+
+    def _detect_table_schema(self, table_name):
+        """Detect schema of a legacy media table using PRAGMA table_info().
+
+        Returns a dict mapping column names to True for columns that exist.
+        Returns empty dict if table doesn't exist or error occurs.
+        """
+        columns = {}
+        try:
+            rows = self.db.execute(f"PRAGMA table_info({table_name})").fetchall()
+            for row in rows:
+                columns[row[1]] = True  # column name is at index 1
+            return columns
+        except Exception:
+            return {}
+
     def _upgrade_schema(self):
         """Upgrade legacy media database to correct operation log schema."""
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
@@ -113,21 +128,60 @@ class ServerMediaDatabase:
             if 'media' in table_names or 'media_current' in table_names:
                 logger.warning("🔄 MIGRATING FROM INCORRECT USN SCHEMA TO OPERATION LOG")
                 
-                # Backup existing data before migration
+                # Backup existing data before migration with schema detection
                 existing_files = []
                 try:
                     if 'media' in table_names:
-                        # Extract current files from old incorrect schema
-                        rows = self.db.execute("SELECT fname, csum, size, mtime FROM media WHERE csum IS NOT NULL").fetchall()
-                        existing_files = [(fname, csum, size if size else 0, mtime) for fname, csum, size, mtime in rows]
-                        logger.info(f"Found {len(existing_files)} files in old schema to migrate")
+                        # Detect schema of legacy media table
+                        media_schema = self._detect_table_schema('media')
+                        logger.info(f"Detected media table schema: {list(media_schema.keys())}")
+
+                        # Construct appropriate SELECT query based on available columns
+                        if 'size' in media_schema and 'mtime' in media_schema:
+                            # Full schema: has size and mtime columns
+                            query = "SELECT fname, csum, size, mtime FROM media WHERE csum IS NOT NULL"
+                            rows = self.db.execute(query).fetchall()
+                            existing_files = [(fname, csum, size if size else 0, mtime) for fname, csum, size, mtime in rows]
+                        elif 'size' in media_schema:
+                            # Has size column but no mtime
+                            query = "SELECT fname, csum, size, NULL as mtime FROM media WHERE csum IS NOT NULL"
+                            rows = self.db.execute(query).fetchall()
+                            existing_files = [(fname, csum, size if size else 0, 0) for fname, csum, size, _ in rows]
+                        else:
+                            # Legacy schema: no size or mtime columns
+                            query = "SELECT fname, csum, NULL as size, NULL as mtime FROM media WHERE csum IS NOT NULL"
+                            rows = self.db.execute(query).fetchall()
+                            existing_files = [(fname, csum, 0, 0) for fname, csum, _, _ in rows]
+
+                        logger.info(f"Found {len(existing_files)} files in media table to migrate using query: {query}")
+
                     elif 'media_current' in table_names:
-                        # Extract from slightly newer but still incorrect schema
-                        rows = self.db.execute("SELECT fname, csum, size, mtime FROM media_current").fetchall()
-                        existing_files = [(fname, csum, size, mtime) for fname, csum, size, mtime in rows]
-                        logger.info(f"Found {len(existing_files)} files in current table to migrate")
+                        # Detect schema of media_current table
+                        current_schema = self._detect_table_schema('media_current')
+                        logger.info(f"Detected media_current table schema: {list(current_schema.keys())}")
+
+                        # Construct appropriate SELECT query based on available columns
+                        if 'size' in current_schema and 'mtime' in current_schema:
+                            # Full schema: has size and mtime columns
+                            query = "SELECT fname, csum, size, mtime FROM media_current"
+                            rows = self.db.execute(query).fetchall()
+                            existing_files = [(fname, csum, size, mtime) for fname, csum, size, mtime in rows]
+                        elif 'size' in current_schema:
+                            # Has size column but no mtime
+                            query = "SELECT fname, csum, size, NULL as mtime FROM media_current"
+                            rows = self.db.execute(query).fetchall()
+                            existing_files = [(fname, csum, size, 0) for fname, csum, size, _ in rows]
+                        else:
+                            # Should not happen for media_current, but handle gracefully
+                            query = "SELECT fname, csum, NULL as size, NULL as mtime FROM media_current"
+                            rows = self.db.execute(query).fetchall()
+                            existing_files = [(fname, csum, 0, 0) for fname, csum, _, _ in rows]
+
+                        logger.info(f"Found {len(existing_files)} files in media_current table to migrate using query: {query}")
+
                 except Exception as e:
                     logger.warning(f"Could not extract existing files for migration: {e}")
+                    logger.warning(f"Schema detection or query failed, proceeding with empty file list")
                 
                 # Drop all old tables and recreate with correct schema
                 self.db.executescript("""
@@ -171,13 +225,27 @@ class ServerMediaDatabase:
                     
                     # Update meta with final USN
                     self.db.execute("""
-                        UPDATE meta SET 
+                        UPDATE meta SET
                             last_usn = ?,
                             total_nonempty_files = ?,
                             total_bytes = ?
                     """, (len(existing_files), len(existing_files), sum(size for _, _, size, _ in existing_files)))
-                    
+
                     self.db.commit()
+
+                    # Validate migration succeeded
+                    try:
+                        migrated_count = self.db.execute("SELECT COUNT(*) FROM media_current").fetchone()[0]
+                        last_usn = self.db.execute("SELECT last_usn FROM meta").fetchone()[0]
+                        if migrated_count != len(existing_files):
+                            logger.error(f"❌ MIGRATION VALIDATION FAILED: Expected {len(existing_files)} files, got {migrated_count} in database")
+                        elif last_usn != len(existing_files):
+                            logger.error(f"❌ MIGRATION VALIDATION FAILED: Expected last_usn={len(existing_files)}, got {last_usn}")
+                        else:
+                            logger.info(f"✅ Migration validation passed: {migrated_count} files migrated, last_usn={last_usn}")
+                    except Exception as e:
+                        logger.warning(f"Migration validation check failed (non-critical): {e}")
+
                     logger.info(f"✅ Migration complete: {len(existing_files)} operations in log, last_usn={len(existing_files)}")
                 else:
                     logger.info("✅ Migration complete: No existing files, clean operation log")
