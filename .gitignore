@@ -389,3 +389,6 @@ db_migration/migration_backups/
 
 # Deployment configuration with secrets
 ECS_DEPLOYMENT_INGREDIENTS.md
+
+# ankipi-meta contains secrets and should not be tracked
+ankipi-meta/
