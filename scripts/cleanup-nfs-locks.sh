@@ -33,13 +33,13 @@ cleanup_nfs_locks() {
         fi
     done < <(find "$COLLECTIONS_ROOT" -name ".nfs*" -type f -print0 2>/dev/null)
 
-    # Also clean up any stale WAL files
+    # Also clean up any stale WAL/SHM files for collection.anki2 (do NOT touch media DB WAL)
     while IFS= read -r -d '' wal_file; do
         if rm -f "$wal_file" 2>/dev/null; then
             log_info "Removed stale WAL file: $(basename "$wal_file") from $(dirname "$wal_file")"
             ((total_cleaned++))
         fi
-    done < <(find "$COLLECTIONS_ROOT" -name "*.anki2-wal" -o -name "*-shm" -o -name "*-wal" | grep -v "journal" | head -20 | tr '\n' '\0' 2>/dev/null)
+    done < <(find "$COLLECTIONS_ROOT" \( -name "*.anki2-wal" -o -name "*.anki2-shm" \) -print0 2>/dev/null)
 
     if [ $total_cleaned -eq 0 ]; then
         log_info "No lock files found to clean up"
